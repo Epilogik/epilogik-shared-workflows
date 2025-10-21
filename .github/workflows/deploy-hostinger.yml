@@ -55,9 +55,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: 
-      name: ${{ inputs.environment }}
-      url: https://${{ secrets.ssh_host }}
+    environment: ${{ inputs.environment }}
     outputs:
       status: ${{ steps.deploy.outputs.deployment_status }}
       services: ${{ steps.deploy.outputs.deployed_services }}
