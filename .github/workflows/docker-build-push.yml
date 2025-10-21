@@ -1,0 +1,144 @@
+name: Docker Build and Push
+
+on:
+  workflow_call:
+    inputs:
+      image_name:
+        description: 'Docker image name (without registry)'
+        required: true
+        type: string
+      dockerfile_path:
+        description: 'Path to Dockerfile'
+        required: false
+        type: string
+        default: './Dockerfile'
+      build_context:
+        description: 'Build context path'
+        required: false
+        type: string
+        default: '.'
+      platforms:
+        description: 'Target platforms'
+        required: false
+        type: string
+        default: 'linux/amd64'
+      push:
+        description: 'Whether to push the image'
+        required: false
+        type: boolean
+        default: true
+      registry:
+        description: 'Container registry'
+        required: false
+        type: string
+        default: 'ghcr.io'
+      tag_suffix:
+        description: 'Tag suffix (e.g., staging, latest)'
+        required: false
+        type: string
+        default: 'latest'
+      build_args:
+        description: 'Build arguments (multiline string)'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      registry_token:
+        description: 'Registry authentication token'
+        required: true
+    outputs:
+      image_digest:
+        description: 'Image digest'
+        value: ${{ jobs.build-push.outputs.digest }}
+      image_tags:
+        description: 'Image tags'
+        value: ${{ jobs.build-push.outputs.tags }}
+      full_image_name:
+        description: 'Full image name with registry'
+        value: ${{ jobs.build-push.outputs.full_name }}
+
+jobs:
+  build-push:
+    name: 🐳 Build & Push Docker Image
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      tags: ${{ steps.meta.outputs.tags }}
+      full_name: ${{ steps.meta.outputs.tags }}
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🏷️ Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ inputs.registry }}/${{ inputs.image_name }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=${{ inputs.tag_suffix }}
+          labels: |
+            org.opencontainers.image.title=${{ inputs.image_name }}
+            org.opencontainers.image.description=Epilogik application
+            org.opencontainers.image.vendor=Epilogik
+
+      - name: 🔧 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🔐 Login to Container Registry
+        if: inputs.push
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.registry_token }}
+
+      - name: 🐳 Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.build_context }}
+          file: ${{ inputs.dockerfile_path }}
+          platforms: ${{ inputs.platforms }}
+          push: ${{ inputs.push }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: ${{ inputs.build_args }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 🔍 Image scan with Trivy
+        if: inputs.push
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ inputs.registry }}/${{ inputs.image_name }}:${{ inputs.tag_suffix }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: 📤 Upload scan results
+        if: inputs.push
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: 📋 Summary
+        run: |
+          echo "## 🐳 Docker Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | \`${{ inputs.registry }}/${{ inputs.image_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | \`${{ inputs.tag_suffix }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Platforms | ${{ inputs.platforms }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Pushed | ${{ inputs.push }} |" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ inputs.push }}" == "true" ]; then
+            echo "| Digest | \`${{ steps.build.outputs.digest }}\` |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🏷️ Tags Generated" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

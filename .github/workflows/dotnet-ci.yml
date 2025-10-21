@@ -1,0 +1,199 @@
+name: .NET CI
+
+on:
+  workflow_call:
+    inputs:
+      dotnet_version:
+        description: '.NET version to use'
+        required: false
+        type: string
+        default: '8.0.x'
+      configuration:
+        description: 'Build configuration'
+        required: false
+        type: string
+        default: 'Release'
+      min_coverage:
+        description: 'Minimum code coverage percentage'
+        required: false
+        type: number
+        default: 80
+      solution_path:
+        description: 'Path to solution file (optional)'
+        required: false
+        type: string
+        default: ''
+      run_tests:
+        description: 'Whether to run tests'
+        required: false
+        type: boolean
+        default: true
+      upload_coverage:
+        description: 'Whether to upload coverage reports'
+        required: false
+        type: boolean
+        default: true
+    outputs:
+      coverage_percentage:
+        description: 'Code coverage percentage'
+        value: ${{ jobs.ci.outputs.coverage }}
+      test_result:
+        description: 'Test result status'
+        value: ${{ jobs.ci.outputs.test_status }}
+      build_artifact:
+        description: 'Build artifact name'
+        value: ${{ jobs.ci.outputs.artifact_name }}
+
+jobs:
+  ci:
+    name: 🔨 Build, Test & Quality
+    runs-on: ubuntu-latest
+    outputs:
+      coverage: ${{ steps.coverage.outputs.coverage }}
+      test_status: ${{ steps.test.outcome }}
+      artifact_name: ${{ steps.artifact.outputs.name }}
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: ⚙️ Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+
+      - name: 📋 Display .NET info
+        run: dotnet --info
+
+      - name: 🔄 Restore dependencies
+        run: |
+          if [ -n "${{ inputs.solution_path }}" ]; then
+            dotnet restore "${{ inputs.solution_path }}"
+          else
+            dotnet restore
+          fi
+
+      - name: 🔨 Build solution
+        run: |
+          if [ -n "${{ inputs.solution_path }}" ]; then
+            dotnet build "${{ inputs.solution_path }}" --configuration ${{ inputs.configuration }} --no-restore
+          else
+            dotnet build --configuration ${{ inputs.configuration }} --no-restore
+          fi
+
+      - name: 🧪 Run tests with coverage
+        if: inputs.run_tests
+        id: test
+        run: |
+          if [ -n "${{ inputs.solution_path }}" ]; then
+            dotnet test "${{ inputs.solution_path }}" --configuration ${{ inputs.configuration }} --no-build \
+              --collect:"XPlat Code Coverage" \
+              --logger trx \
+              --results-directory TestResults \
+              --verbosity normal
+          else
+            dotnet test --configuration ${{ inputs.configuration }} --no-build \
+              --collect:"XPlat Code Coverage" \
+              --logger trx \
+              --results-directory TestResults \
+              --verbosity normal
+          fi
+
+      - name: 📊 Process coverage
+        if: inputs.run_tests
+        id: coverage
+        run: |
+          set -euo pipefail
+          
+          echo "🔍 Processing test coverage..."
+          COVERAGE_FILE=$(find TestResults -name "coverage.cobertura.xml" | head -1)
+          
+          if [ ! -f "$COVERAGE_FILE" ]; then
+            echo "❌ Coverage report not found"
+            echo "coverage=0" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # Extract coverage rate
+          RATE=$(grep -m 1 -o 'line-rate="[^"]*"' "$COVERAGE_FILE" | grep -o '[0-9.]*' || echo "0")
+          COVERAGE=$(python3 -c "print(round(float('${RATE:-0}') * 100, 2))")
+          
+          echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
+          echo "📊 Current coverage: ${COVERAGE}%"
+          echo "📋 Required minimum: ${{ inputs.min_coverage }}%"
+          
+          # Validate coverage threshold
+          python3 -c "
+          import sys
+          current = float('$COVERAGE')
+          minimum = float('${{ inputs.min_coverage }}')
+          if current < minimum:
+              print(f'❌ Coverage {current}% is below minimum {minimum}%')
+              sys.exit(1)
+          else:
+              print(f'✅ Coverage {current}% meets minimum {minimum}%')
+          "
+
+      - name: 📤 Upload coverage reports
+        if: inputs.upload_coverage && inputs.run_tests
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: TestResults/**/coverage.cobertura.xml
+          retention-days: 7
+
+      - name: 📤 Upload test results
+        if: inputs.run_tests && (success() || failure())
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults/**/*.trx
+          retention-days: 7
+
+      - name: 📦 Create build artifact
+        id: artifact
+        run: |
+          ARTIFACT_NAME="build-${{ github.run_number }}"
+          echo "name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+          
+          # Create publish directory for artifact
+          mkdir -p publish
+          
+          if [ -n "${{ inputs.solution_path }}" ]; then
+            dotnet publish "${{ inputs.solution_path }}" \
+              --configuration ${{ inputs.configuration }} \
+              --no-build \
+              --output publish
+          else
+            # Find the main project (usually Web/API project)
+            MAIN_PROJECT=$(find . -name "*.csproj" -path "*/bin" -prune -o -name "*.csproj" -print | head -1)
+            if [ -n "$MAIN_PROJECT" ]; then
+              dotnet publish "$MAIN_PROJECT" \
+                --configuration ${{ inputs.configuration }} \
+                --no-build \
+                --output publish
+            fi
+          fi
+
+      - name: 📤 Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: publish/
+          retention-days: 7
+
+      - name: 📋 Summary
+        run: |
+          echo "## 🔨 .NET CI Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| .NET Version | ${{ inputs.dotnet_version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Configuration | ${{ inputs.configuration }} |" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ inputs.run_tests }}" == "true" ]; then
+            echo "| Code Coverage | ${{ steps.coverage.outputs.coverage }}% |" >> $GITHUB_STEP_SUMMARY
+            echo "| Min Coverage | ${{ inputs.min_coverage }}% |" >> $GITHUB_STEP_SUMMARY
+            echo "| Tests Status | ${{ steps.test.outcome }} |" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "| Artifact | ${{ steps.artifact.outputs.name }} |" >> $GITHUB_STEP_SUMMARY
