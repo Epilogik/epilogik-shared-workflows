@@ -133,10 +133,11 @@ jobs:
             -p ${{ secrets.ssh_port || '22' }} \
             ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} \
             "cd ${{ secrets.deploy_path }}/${{ inputs.environment }} && \
-             echo '🔄 Stopping existing containers...' && \
-             $COMPOSE_CMD down || true && \
+             echo '🔄 Stopping and removing existing containers...' && \
+             $COMPOSE_CMD down --remove-orphans || true && \
+             docker ps -a --filter 'name=postgres' --filter 'name=redis' --filter 'name=rabbitmq' --filter 'name=evolution-api' -q | xargs -r docker rm -f || true && \
              echo '🚀 Starting services...' && \
-             $COMPOSE_CMD up -d --remove-orphans"
+             $COMPOSE_CMD up -d --remove-orphans --force-recreate"
 
       - name: Wait for services to be healthy
         if: inputs.wait_for_health
