@@ -82,6 +82,30 @@ jobs:
       container_id: ${{ steps.deployment.outputs.container_id }}
     
     steps:
+      - name: ✅ Validate inputs
+        run: |
+          echo "🔍 Validating deployment inputs..."
+          
+          if [ -z "${{ secrets.vps_host }}" ]; then
+            echo "❌ Error: vps_host secret is not set"
+            exit 1
+          fi
+          
+          if [ -z "${{ secrets.vps_user }}" ]; then
+            echo "❌ Error: vps_user secret is not set"
+            exit 1
+          fi
+          
+          if [ -z "${{ secrets.vps_key }}" ]; then
+            echo "❌ Error: vps_key secret is not set"
+            exit 1
+          fi
+          
+          echo "✅ All required secrets are present"
+          echo "🎯 Target: ${{ secrets.vps_user }}@${{ secrets.vps_host }}"
+          echo "🐳 Image: ${{ inputs.docker_image }}"
+          echo "📦 Container: ${{ inputs.container_name }}"
+
       - name: 🔧 Setup SSH
         run: |
           mkdir -p ~/.ssh
