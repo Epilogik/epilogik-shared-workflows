@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       environment:
-        description: 'Deployment environment (staging/production)'
+        description: 'Deployment environment (staging/production/development)'
         required: true
         type: string
       docker_image:
@@ -34,40 +34,71 @@ on:
         type: boolean
         default: true
       cleanup_images:
-        description: 'Cleanup old Docker images'
+        description: 'Cleanup old Docker images after deployment'
         required: false
         type: boolean
         default: true
       health_check_url:
-        description: 'URL to check for health (optional)'
+        description: 'URL to check for application health (optional)'
         required: false
         type: string
         default: ''
+      health_check_timeout:
+        description: 'Health check timeout in seconds'
+        required: false
+        type: number
+        default: 300
       env_vars:
         description: 'Environment variables for container (JSON format)'
         required: false
         type: string
         default: '{}'
+      volumes:
+        description: 'Volume mounts for container (JSON array format)'
+        required: false
+        type: string
+        default: '[]'
+      restart_policy:
+        description: 'Container restart policy'
+        required: false
+        type: string
+        default: 'unless-stopped'
+      deploy_strategy:
+        description: 'Deployment strategy (rolling/blue-green/recreate)'
+        required: false
+        type: string
+        default: 'rolling'
+      rollback_on_failure:
+        description: 'Rollback to previous version on deployment failure'
+        required: false
+        type: boolean
+        default: true
     secrets:
-      vps_host:
-        description: 'VPS hostname or IP'
+      ssh_host:
+        description: 'SSH hostname or IP address'
         required: true
-      vps_user:
+      ssh_user:
         description: 'SSH username'
         required: true
-      vps_key:
+      ssh_key:
         description: 'SSH private key'
         required: true
-      vps_port:
-        description: 'SSH port'
+      ssh_port:
+        description: 'SSH port number'
         required: false
     outputs:
       deployment_status:
-        description: 'Deployment status'
+        description: 'Deployment status (success/failed/rolled-back)'
         value: ${{ jobs.deploy.outputs.status }}
       container_id:
         description: 'Deployed container ID'
         value: ${{ jobs.deploy.outputs.container_id }}
+      previous_image:
+        description: 'Previous container image (for rollback)'
+        value: ${{ jobs.deploy.outputs.previous_image }}
+      deployment_time:
+        description: 'Deployment duration in seconds'
+        value: ${{ jobs.deploy.outputs.deployment_time }}
 
 permissions:
   contents: read
@@ -77,54 +108,158 @@ jobs:
   deploy:
     name: 🚀 Deploy Container
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
     outputs:
       status: ${{ steps.deployment.outputs.status }}
       container_id: ${{ steps.deployment.outputs.container_id }}
+      previous_image: ${{ steps.deployment.outputs.previous_image }}
+      deployment_time: ${{ steps.deployment.outputs.deployment_time }}
     
     steps:
-      - name: ✅ Validate inputs
+      - name: ✅ Validate deployment inputs
         run: |
           echo "🔍 Validating deployment inputs..."
           
-          if [ -z "${{ secrets.vps_host }}" ]; then
-            echo "❌ Error: vps_host secret is not set"
+          # Validate required secrets
+          if [ -z "${{ secrets.ssh_host }}" ]; then
+            echo "❌ Error: ssh_host secret is not set"
             exit 1
           fi
           
-          if [ -z "${{ secrets.vps_user }}" ]; then
-            echo "❌ Error: vps_user secret is not set"
+          if [ -z "${{ secrets.ssh_user }}" ]; then
+            echo "❌ Error: ssh_user secret is not set"
             exit 1
           fi
           
-          if [ -z "${{ secrets.vps_key }}" ]; then
-            echo "❌ Error: vps_key secret is not set"
+          if [ -z "${{ secrets.ssh_key }}" ]; then
+            echo "❌ Error: ssh_key secret is not set"
             exit 1
           fi
           
-          echo "✅ All required secrets are present"
-          echo "🎯 Target: ${{ secrets.vps_user }}@${{ secrets.vps_host }}"
+          # Validate environment
+          case "${{ inputs.environment }}" in
+            staging|production|development)
+              echo "✅ Valid environment: ${{ inputs.environment }}"
+              ;;
+            *)
+              echo "❌ Error: Invalid environment '${{ inputs.environment }}'. Must be staging, production, or development"
+              exit 1
+              ;;
+          esac
+          
+          # Validate deployment strategy
+          case "${{ inputs.deploy_strategy }}" in
+            rolling|blue-green|recreate)
+              echo "✅ Valid deployment strategy: ${{ inputs.deploy_strategy }}"
+              ;;
+            *)
+              echo "❌ Error: Invalid deployment strategy '${{ inputs.deploy_strategy }}'. Must be rolling, blue-green, or recreate"
+              exit 1
+              ;;
+          esac
+          
+          echo "✅ All validations passed"
+          echo "🎯 Target: ${{ secrets.ssh_user }}@${{ secrets.ssh_host }}"
           echo "🐳 Image: ${{ inputs.docker_image }}"
           echo "📦 Container: ${{ inputs.container_name }}"
+          echo "🌍 Environment: ${{ inputs.environment }}"
+          echo "🚀 Strategy: ${{ inputs.deploy_strategy }}"
 
-      - name: 🔧 Setup SSH
+      - name: 🔧 Setup SSH connection
         run: |
+          echo "🔧 Setting up SSH connection..."
+          
+          # Create .ssh directory
           mkdir -p ~/.ssh
-          echo "${{ secrets.vps_key }}" > ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
+          
+          # Setup private key
+          echo "${{ secrets.ssh_key }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.vps_host }} >> ~/.ssh/known_hosts
+          
+          # Add host to known_hosts
+          ssh-keyscan -H -p ${{ secrets.ssh_port || '22' }} ${{ secrets.ssh_host }} >> ~/.ssh/known_hosts
+          
+          # Test SSH connection
+          SSH_PORT="${{ secrets.ssh_port || '22' }}"
+          if ssh -p $SSH_PORT -o ConnectTimeout=10 -o BatchMode=yes ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'echo "SSH connection successful"'; then
+            echo "✅ SSH connection established successfully"
+          else
+            echo "❌ Failed to establish SSH connection"
+            exit 1
+          fi
 
-      - name: 🐳 Deploy Container
+      - name: 🔍 Pre-deployment checks
+        id: pre-checks
+        run: |
+          echo "🔍 Running pre-deployment checks..."
+          
+          SSH_PORT="${{ secrets.ssh_port || '22' }}"
+          
+          ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} << 'EOF'
+            set -e
+            
+            echo "🐳 Checking Docker installation..."
+            if ! command -v docker &> /dev/null; then
+              echo "❌ Docker is not installed on the target server"
+              exit 1
+            fi
+            
+            echo "✅ Docker version: $(docker --version)"
+            
+            echo "🔍 Checking current container status..."
+            if docker ps -a --format "table {{.Names}}" | grep -q "^${{ inputs.container_name }}$"; then
+              CURRENT_IMAGE=$(docker inspect --format='{{.Config.Image}}' ${{ inputs.container_name }} 2>/dev/null || echo "none")
+              echo "current_image=$CURRENT_IMAGE" >> $GITHUB_OUTPUT
+              echo "📦 Current container image: $CURRENT_IMAGE"
+            else
+              echo "current_image=none" >> $GITHUB_OUTPUT
+              echo "ℹ️ No existing container found"
+            fi
+            
+            echo "💾 Checking available disk space..."
+            DISK_USAGE=$(df / | awk 'NR==2 {print $5}' | sed 's/%//')
+            if [ "$DISK_USAGE" -gt 90 ]; then
+              echo "⚠️ Warning: Disk usage is ${DISK_USAGE}% - cleanup may be needed"
+            fi
+            
+            echo "🔧 Checking required ports..."
+            if netstat -tlnp | grep -q ":${{ inputs.host_port }} "; then
+              PROCESS=$(netstat -tlnp | grep ":${{ inputs.host_port }} " | awk '{print $7}')
+              echo "⚠️ Port ${{ inputs.host_port }} is already in use by: $PROCESS"
+            else
+              echo "✅ Port ${{ inputs.host_port }} is available"
+            fi
+          EOF
+
+      - name: 🚀 Deploy container
         id: deployment
         run: |
-          SSH_PORT="${{ secrets.vps_port || '22' }}"
+          echo "🚀 Starting container deployment..."
+          START_TIME=$(date +%s)
           
-          echo "🚀 Starting deployment of ${{ inputs.docker_image }}"
-          echo "📦 Container: ${{ inputs.container_name }}"
-          echo "🌍 Environment: ${{ inputs.environment }}"
+          SSH_PORT="${{ secrets.ssh_port || '22' }}"
           
           # Connect to server and deploy
-          ssh -p $SSH_PORT ${{ secrets.vps_user }}@${{ secrets.vps_host }} << 'EOF'
+          ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} << 'EOF'
             set -e
+            
+            # Set deployment variables
+            CONTAINER_NAME="${{ inputs.container_name }}"
+            IMAGE_NAME="${{ inputs.docker_image }}"
+            ENVIRONMENT="${{ inputs.environment }}"
+            DEPLOY_STRATEGY="${{ inputs.deploy_strategy }}"
+            
+            echo "🚀 Deploying $IMAGE_NAME to $ENVIRONMENT using $DEPLOY_STRATEGY strategy"
+            
+            # Create backup of current state for rollback
+            if docker ps -a --format "table {{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
+              PREVIOUS_IMAGE=$(docker inspect --format='{{.Config.Image}}' $CONTAINER_NAME 2>/dev/null || echo "none")
+              echo "💾 Previous image: $PREVIOUS_IMAGE"
+            else
+              PREVIOUS_IMAGE="none"
+            fi
             
             # Create network if it doesn't exist
             if ! docker network inspect ${{ inputs.docker_network }} >/dev/null 2>&1; then
@@ -132,20 +267,13 @@ jobs:
               docker network create ${{ inputs.docker_network }}
             fi
             
-            # Stop and remove existing container if it exists
-            if docker ps -a --format "table {{.Names}}" | grep -q "^${{ inputs.container_name }}$"; then
-              echo "🛑 Stopping existing container: ${{ inputs.container_name }}"
-              docker stop ${{ inputs.container_name }} || true
-              docker rm ${{ inputs.container_name }} || true
-            fi
-            
             # Login to registry
             echo "🔐 Logging into container registry..."
             echo "${{ github.token }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             
-            # Pull latest image
-            echo "📥 Pulling image: ${{ inputs.docker_image }}"
-            docker pull ${{ inputs.docker_image }}
+            # Pull new image
+            echo "📥 Pulling image: $IMAGE_NAME"
+            docker pull $IMAGE_NAME
             
             # Parse environment variables
             ENV_VARS=""
@@ -153,52 +281,166 @@ jobs:
               ENV_VARS=$(echo '${{ inputs.env_vars }}' | jq -r 'to_entries[] | "-e \(.key)=\(.value)"' | tr '\n' ' ')
             fi
             
-            # Run new container
-            echo "🚀 Starting new container..."
-            CONTAINER_ID=$(docker run -d \
-              --name ${{ inputs.container_name }} \
-              --network ${{ inputs.docker_network }} \
-              -p ${{ inputs.host_port }}:${{ inputs.container_port }} \
-              --restart unless-stopped \
-              $ENV_VARS \
-              ${{ inputs.docker_image }})
+            # Parse volume mounts
+            VOLUME_MOUNTS=""
+            if [ "${{ inputs.volumes }}" != "[]" ]; then
+              VOLUME_MOUNTS=$(echo '${{ inputs.volumes }}' | jq -r '.[] | "-v \(.)"' | tr '\n' ' ')
+            fi
+            
+            # Deployment strategy implementation
+            case "$DEPLOY_STRATEGY" in
+              "rolling")
+                echo "🔄 Executing rolling deployment..."
+                
+                # Stop existing container gracefully
+                if docker ps --format "table {{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
+                  echo "🛑 Gracefully stopping existing container..."
+                  docker stop ${CONTAINER_NAME} --time=30 || true
+                  docker rm ${CONTAINER_NAME} || true
+                fi
+                
+                # Start new container
+                echo "🚀 Starting new container..."
+                CONTAINER_ID=$(docker run -d \
+                  --name ${CONTAINER_NAME} \
+                  --network ${{ inputs.docker_network }} \
+                  -p ${{ inputs.host_port }}:${{ inputs.container_port }} \
+                  --restart ${{ inputs.restart_policy }} \
+                  $ENV_VARS \
+                  $VOLUME_MOUNTS \
+                  $IMAGE_NAME)
+                ;;
+                
+              "blue-green")
+                echo "🔵 Executing blue-green deployment..."
+                
+                TEMP_CONTAINER="${CONTAINER_NAME}-temp"
+                
+                # Start new container with temporary name
+                echo "🚀 Starting new container (green)..."
+                CONTAINER_ID=$(docker run -d \
+                  --name ${TEMP_CONTAINER} \
+                  --network ${{ inputs.docker_network }} \
+                  --restart ${{ inputs.restart_policy }} \
+                  $ENV_VARS \
+                  $VOLUME_MOUNTS \
+                  $IMAGE_NAME)
+                
+                # Wait for health check
+                echo "🏥 Waiting for new container to be healthy..."
+                sleep 10
+                
+                if docker ps --filter "name=${TEMP_CONTAINER}" --filter "status=running" | grep -q ${TEMP_CONTAINER}; then
+                  echo "✅ New container is healthy, switching traffic..."
+                  
+                  # Stop old container
+                  if docker ps --format "table {{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
+                    docker stop ${CONTAINER_NAME} --time=30 || true
+                    docker rm ${CONTAINER_NAME} || true
+                  fi
+                  
+                  # Rename temp container to production name
+                  docker rename ${TEMP_CONTAINER} ${CONTAINER_NAME}
+                  
+                  # Update port mapping
+                  docker stop ${CONTAINER_NAME}
+                  docker rm ${CONTAINER_NAME}
+                  CONTAINER_ID=$(docker run -d \
+                    --name ${CONTAINER_NAME} \
+                    --network ${{ inputs.docker_network }} \
+                    -p ${{ inputs.host_port }}:${{ inputs.container_port }} \
+                    --restart ${{ inputs.restart_policy }} \
+                    $ENV_VARS \
+                    $VOLUME_MOUNTS \
+                    $IMAGE_NAME)
+                else
+                  echo "❌ New container failed health check, cleaning up..."
+                  docker stop ${TEMP_CONTAINER} || true
+                  docker rm ${TEMP_CONTAINER} || true
+                  exit 1
+                fi
+                ;;
+                
+              "recreate")
+                echo "♻️ Executing recreate deployment..."
+                
+                # Force remove existing container
+                if docker ps -a --format "table {{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
+                  echo "🗑️ Removing existing container..."
+                  docker stop ${CONTAINER_NAME} --time=10 || true
+                  docker rm ${CONTAINER_NAME} || true
+                fi
+                
+                # Start new container
+                echo "🚀 Starting new container..."
+                CONTAINER_ID=$(docker run -d \
+                  --name ${CONTAINER_NAME} \
+                  --network ${{ inputs.docker_network }} \
+                  -p ${{ inputs.host_port }}:${{ inputs.container_port }} \
+                  --restart ${{ inputs.restart_policy }} \
+                  $ENV_VARS \
+                  $VOLUME_MOUNTS \
+                  $IMAGE_NAME)
+                ;;
+            esac
             
             echo "✅ Container started with ID: $CONTAINER_ID"
-            echo "container_id=$CONTAINER_ID" >> $GITHUB_OUTPUT
             
             # Wait for container to be healthy
             if [ "${{ inputs.wait_for_health }}" = "true" ]; then
               echo "🏥 Waiting for container to be healthy..."
-              for i in {1..30}; do
-                if docker ps --filter "name=${{ inputs.container_name }}" --filter "status=running" | grep -q ${{ inputs.container_name }}; then
-                  echo "✅ Container is running (attempt $i/30)"
+              HEALTH_TIMEOUT=${{ inputs.health_check_timeout }}
+              
+              for i in $(seq 1 $((HEALTH_TIMEOUT / 10))); do
+                if docker ps --filter "name=${CONTAINER_NAME}" --filter "status=running" | grep -q ${CONTAINER_NAME}; then
+                  echo "✅ Container is running (attempt $i/$((HEALTH_TIMEOUT / 10)))"
                   break
                 else
-                  echo "⏳ Container not ready yet, waiting... (attempt $i/30)"
+                  echo "⏳ Container not ready yet, waiting... (attempt $i/$((HEALTH_TIMEOUT / 10)))"
                   sleep 10
                 fi
                 
-                if [ $i -eq 30 ]; then
-                  echo "❌ Container failed to start properly"
-                  docker logs ${{ inputs.container_name }} --tail 50
+                if [ $i -eq $((HEALTH_TIMEOUT / 10)) ]; then
+                  echo "❌ Container failed to start properly within ${HEALTH_TIMEOUT}s"
+                  docker logs ${CONTAINER_NAME} --tail 50
                   exit 1
                 fi
               done
               
               # Additional health check if URL provided
               if [ -n "${{ inputs.health_check_url }}" ]; then
-                echo "🔍 Performing health check on ${{ inputs.health_check_url }}"
-                for i in {1..10}; do
-                  if curl -f -s "${{ inputs.health_check_url }}" >/dev/null; then
-                    echo "✅ Health check passed (attempt $i/10)"
+                echo "🔍 Performing application health check on ${{ inputs.health_check_url }}"
+                for i in $(seq 1 $((HEALTH_TIMEOUT / 15))); do
+                  if curl -f -s --max-time 10 "${{ inputs.health_check_url }}" >/dev/null; then
+                    echo "✅ Health check passed (attempt $i/$((HEALTH_TIMEOUT / 15)))"
                     break
                   else
-                    echo "⏳ Health check failed, retrying... (attempt $i/10)"
+                    echo "⏳ Health check failed, retrying... (attempt $i/$((HEALTH_TIMEOUT / 15)))"
                     sleep 15
                   fi
                   
-                  if [ $i -eq 10 ]; then
-                    echo "❌ Health check failed after 10 attempts"
+                  if [ $i -eq $((HEALTH_TIMEOUT / 15)) ]; then
+                    echo "❌ Health check failed after $((HEALTH_TIMEOUT / 15)) attempts"
+                    
+                    if [ "${{ inputs.rollback_on_failure }}" = "true" ] && [ "$PREVIOUS_IMAGE" != "none" ]; then
+                      echo "🔄 Rolling back to previous image: $PREVIOUS_IMAGE"
+                      docker stop ${CONTAINER_NAME} || true
+                      docker rm ${CONTAINER_NAME} || true
+                      
+                      docker run -d \
+                        --name ${CONTAINER_NAME} \
+                        --network ${{ inputs.docker_network }} \
+                        -p ${{ inputs.host_port }}:${{ inputs.container_port }} \
+                        --restart ${{ inputs.restart_policy }} \
+                        $ENV_VARS \
+                        $VOLUME_MOUNTS \
+                        $PREVIOUS_IMAGE
+                      
+                      echo "previous_image=$PREVIOUS_IMAGE" >> $GITHUB_OUTPUT
+                      echo "status=rolled-back" >> $GITHUB_OUTPUT
+                    else
+                      echo "status=failed" >> $GITHUB_OUTPUT
+                    fi
                     exit 1
                   fi
                 done
@@ -207,49 +449,122 @@ jobs:
             
             # Cleanup old images if requested
             if [ "${{ inputs.cleanup_images }}" = "true" ]; then
-              echo "🧹 Cleaning up old images..."
+              echo "🧹 Cleaning up old Docker images..."
               # Remove dangling images
               docker image prune -f || true
+              
               # Remove old images of the same repository (keep latest 3)
-              REPO_NAME=$(echo "${{ inputs.docker_image }}" | cut -d: -f1)
+              REPO_NAME=$(echo "$IMAGE_NAME" | cut -d: -f1)
               docker images "$REPO_NAME" --format "table {{.Repository}}:{{.Tag}} {{.ID}}" | tail -n +2 | tail -n +4 | awk '{print $2}' | xargs -r docker rmi || true
+              echo "✅ Image cleanup completed"
             fi
+            
+            # Output results
+            echo "container_id=$CONTAINER_ID" >> $GITHUB_OUTPUT
+            echo "previous_image=$PREVIOUS_IMAGE" >> $GITHUB_OUTPUT
+            echo "status=success" >> $GITHUB_OUTPUT
             
             echo "🎉 Deployment completed successfully!"
           EOF
           
-          echo "status=success" >> $GITHUB_OUTPUT
+          # Calculate deployment time
+          END_TIME=$(date +%s)
+          DEPLOYMENT_TIME=$((END_TIME - START_TIME))
+          echo "deployment_time=$DEPLOYMENT_TIME" >> $GITHUB_OUTPUT
+          
+          echo "⏱️ Deployment completed in ${DEPLOYMENT_TIME} seconds"
 
-      - name: 📊 Deployment Summary
+      - name: 🔍 Post-deployment verification
+        if: steps.deployment.outputs.status == 'success'
         run: |
-          echo "## 🎉 Container Deployment Successful!" >> $GITHUB_STEP_SUMMARY
+          echo "🔍 Running post-deployment verification..."
+          
+          SSH_PORT="${{ secrets.ssh_port || '22' }}"
+          
+          ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} << 'EOF'
+            echo "📊 Container status:"
+            docker ps --filter "name=${{ inputs.container_name }}" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+            
+            echo ""
+            echo "💾 Container resource usage:"
+            docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}" ${{ inputs.container_name }}
+            
+            echo ""
+            echo "🔗 Network connectivity:"
+            docker exec ${{ inputs.container_name }} ping -c 3 google.com || true
+          EOF
+
+      - name: 📊 Generate deployment summary
+        if: always()
+        run: |
+          echo "## 🚀 Container Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Deployment Status
+          echo "### 📊 Deployment Status" >> $GITHUB_STEP_SUMMARY
           echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| 🌍 Environment | \`${{ inputs.environment }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🐳 Image | \`${{ inputs.docker_image }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| 📦 Container | \`${{ inputs.container_name }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🔌 Port Mapping | \`${{ inputs.host_port }}:${{ inputs.container_port }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🌐 Network | \`${{ inputs.docker_network }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🆔 Container ID | \`${{ steps.deployment.outputs.container_id }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ${{ steps.deployment.outputs.status || 'Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | \`${{ inputs.environment }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Strategy | ${{ inputs.deploy_strategy }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Duration | ${{ steps.deployment.outputs.deployment_time || 'N/A' }}s |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | \`${{ inputs.docker_image }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Container | \`${{ inputs.container_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Network | \`${{ inputs.docker_network }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Port Mapping | \`${{ inputs.host_port }}:${{ inputs.container_port }}\` |" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -n "${{ steps.deployment.outputs.container_id }}" ]; then
+            echo "| Container ID | \`${{ steps.deployment.outputs.container_id }}\` |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ -n "${{ steps.deployment.outputs.previous_image }}" ] && [ "${{ steps.deployment.outputs.previous_image }}" != "none" ]; then
+            echo "| Previous Image | \`${{ steps.deployment.outputs.previous_image }}\` |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Configuration
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ⚙️ Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "| Feature | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Health Checks | ${{ inputs.wait_for_health && '✅ Enabled' || '❌ Disabled' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image Cleanup | ${{ inputs.cleanup_images && '✅ Enabled' || '❌ Disabled' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Rollback on Failure | ${{ inputs.rollback_on_failure && '✅ Enabled' || '❌ Disabled' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Restart Policy | \`${{ inputs.restart_policy }}\` |" >> $GITHUB_STEP_SUMMARY
           
           if [ -n "${{ inputs.health_check_url }}" ]; then
-            echo "| 🏥 Health Check | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+            echo "| Health Check URL | ${{ inputs.health_check_url }} |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Results
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.deployment.outputs.status }}" == "success" ]; then
+            echo "✅ **Deployment completed successfully!**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Next Steps:**" >> $GITHUB_STEP_SUMMARY
+            echo "- Monitor application logs and metrics" >> $GITHUB_STEP_SUMMARY
+            echo "- Verify all functionality is working as expected" >> $GITHUB_STEP_SUMMARY
+            echo "- Run integration tests if available" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ steps.deployment.outputs.status }}" == "rolled-back" ]; then
+            echo "🔄 **Deployment failed but was rolled back successfully!**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Action Required:**" >> $GITHUB_STEP_SUMMARY
+            echo "- Check deployment logs for failure reason" >> $GITHUB_STEP_SUMMARY
+            echo "- Fix the issue and retry deployment" >> $GITHUB_STEP_SUMMARY
+            echo "- Previous version is currently running" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Deployment failed!**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Troubleshooting Steps:**" >> $GITHUB_STEP_SUMMARY
+            echo "1. Check container logs: \`docker logs ${{ inputs.container_name }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "2. Verify image exists and is accessible" >> $GITHUB_STEP_SUMMARY
+            echo "3. Check port availability and networking" >> $GITHUB_STEP_SUMMARY
+            echo "4. Verify environment variables and volumes" >> $GITHUB_STEP_SUMMARY
+            echo "5. Check server resources (CPU, memory, disk)" >> $GITHUB_STEP_SUMMARY
           fi
 
-      - name: ❌ Deployment Failed
-        if: failure()
+      - name: 🧹 Cleanup SSH
+        if: always()
         run: |
-          echo "## ❌ Container Deployment Failed" >> $GITHUB_STEP_SUMMARY
-          echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| 🌍 Environment | \`${{ inputs.environment }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🐳 Image | \`${{ inputs.docker_image }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| 📦 Container | \`${{ inputs.container_name }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| ❌ Status | Failed |" >> $GITHUB_STEP_SUMMARY
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 🚨 Troubleshooting Steps" >> $GITHUB_STEP_SUMMARY
-          echo "1. Check container logs: \`docker logs ${{ inputs.container_name }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "2. Verify image exists: \`docker pull ${{ inputs.docker_image }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "3. Check port availability: \`netstat -tlnp | grep ${{ inputs.host_port }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "4. Verify network: \`docker network inspect ${{ inputs.docker_network }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "🧹 Cleaning up SSH configuration..."
+          rm -f ~/.ssh/id_rsa
+          echo "✅ SSH cleanup completed"

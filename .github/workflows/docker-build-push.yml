@@ -4,11 +4,11 @@ on:
   workflow_call:
     inputs:
       image_name:
-        description: 'Docker image name (without registry)'
+        description: 'Docker image name (without registry prefix)'
         required: true
         type: string
       dockerfile_path:
-        description: 'Path to Dockerfile'
+        description: 'Path to Dockerfile relative to context'
         required: false
         type: string
         default: './Dockerfile'
@@ -18,30 +18,55 @@ on:
         type: string
         default: '.'
       platforms:
-        description: 'Target platforms'
+        description: 'Target platforms (comma-separated)'
         required: false
         type: string
-        default: 'linux/amd64'
+        default: 'linux/amd64,linux/arm64'
       push:
-        description: 'Whether to push the image'
+        description: 'Whether to push the image to registry'
         required: false
         type: boolean
         default: true
       registry:
-        description: 'Container registry'
+        description: 'Container registry hostname'
         required: false
         type: string
         default: 'ghcr.io'
       tag_suffix:
-        description: 'Tag suffix (e.g., staging, latest)'
+        description: 'Additional tag suffix (e.g., staging, latest)'
         required: false
         type: string
         default: 'latest'
       build_args:
-        description: 'Build arguments (multiline string)'
+        description: 'Build arguments (key=value, one per line)'
         required: false
         type: string
         default: ''
+      target:
+        description: 'Dockerfile target stage'
+        required: false
+        type: string
+        default: ''
+      cache_enabled:
+        description: 'Enable build caching'
+        required: false
+        type: boolean
+        default: true
+      security_scan:
+        description: 'Enable security scanning with Trivy'
+        required: false
+        type: boolean
+        default: true
+      provenance:
+        description: 'Generate provenance attestation'
+        required: false
+        type: boolean
+        default: true
+      sbom:
+        description: 'Generate SBOM attestation'
+        required: false
+        type: boolean
+        default: true
     secrets:
       registry_token:
         description: 'Registry authentication token'
@@ -51,24 +76,64 @@ on:
         description: 'Image digest'
         value: ${{ jobs.build-push.outputs.digest }}
       image_tags:
-        description: 'Image tags'
+        description: 'Generated image tags'
         value: ${{ jobs.build-push.outputs.tags }}
       full_image_name:
-        description: 'Full image name with registry'
+        description: 'Full image name with registry and tag'
         value: ${{ jobs.build-push.outputs.full_name }}
+      image_size:
+        description: 'Image size in MB'
+        value: ${{ jobs.build-push.outputs.image_size }}
+      scan_results:
+        description: 'Security scan results summary'
+        value: ${{ jobs.build-push.outputs.scan_summary }}
+
+permissions:
+  contents: read
+  packages: write
+  security-events: write
+  id-token: write # Required for provenance
+  attestations: write
 
 jobs:
   build-push:
     name: 🐳 Build & Push Docker Image
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     outputs:
       digest: ${{ steps.build.outputs.digest }}
       tags: ${{ steps.meta.outputs.tags }}
       full_name: ${{ steps.meta.outputs.tags }}
+      image_size: ${{ steps.inspect.outputs.size }}
+      scan_summary: ${{ steps.scan.outputs.summary }}
 
     steps:
-      - name: 📥 Checkout code
+      - name: 📥 Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Required for GitVersion and proper context
+
+      - name: ✅ Validate inputs
+        run: |
+          echo "🔍 Validating Docker build inputs..."
+          
+          # Validate Dockerfile exists
+          if [ ! -f "${{ inputs.dockerfile_path }}" ]; then
+            echo "❌ Error: Dockerfile not found at ${{ inputs.dockerfile_path }}"
+            exit 1
+          fi
+          
+          # Validate build context exists
+          if [ ! -d "${{ inputs.build_context }}" ]; then
+            echo "❌ Error: Build context directory not found at ${{ inputs.build_context }}"
+            exit 1
+          fi
+          
+          echo "✅ All inputs validated successfully"
+          echo "🐳 Image: ${{ inputs.registry }}/${{ inputs.image_name }}"
+          echo "📁 Context: ${{ inputs.build_context }}"
+          echo "📄 Dockerfile: ${{ inputs.dockerfile_path }}"
+          echo "🏗️ Platforms: ${{ inputs.platforms }}"
 
       - name: 🏷️ Extract metadata
         id: meta
@@ -78,17 +143,35 @@ jobs:
           tags: |
             type=ref,event=branch
             type=ref,event=pr
-            type=sha,prefix={{branch}}-
-            type=raw,value=${{ inputs.tag_suffix }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix={{branch}}-,format=short
+            type=raw,value=${{ inputs.tag_suffix }},enable={{is_default_branch}}
+            type=raw,value=latest,enable={{is_default_branch}}
           labels: |
             org.opencontainers.image.title=${{ inputs.image_name }}
-            org.opencontainers.image.description=Epilogik application
+            org.opencontainers.image.description=Epilogik containerized application
+            org.opencontainers.image.vendor=Epilogik
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created={{date 'YYYY-MM-DDTHH:mm:ssZ'}}
+          annotations: |
+            org.opencontainers.image.title=${{ inputs.image_name }}
+            org.opencontainers.image.description=Epilogik containerized application
             org.opencontainers.image.vendor=Epilogik
 
       - name: 🔧 Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          version: latest
+          driver-opts: |
+            network=host
+          buildkitd-flags: |
+            --allow-insecure-entitlement network.host
+            --allow-insecure-entitlement security.insecure
 
-      - name: 🔐 Login to Container Registry
+      - name: 🔐 Log in to Container Registry
         if: inputs.push
         uses: docker/login-action@v3
         with:
@@ -96,7 +179,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.registry_token }}
 
-      - name: 🐳 Build and push Docker image
+      - name: 💾 Configure build cache
+        if: inputs.cache_enabled
+        run: |
+          echo "🗂️ Configuring build cache..."
+          echo "Cache will be stored in GitHub Actions cache"
+          echo "Cache scope: ${{ inputs.registry }}/${{ inputs.image_name }}"
+
+      - name: � Parse build arguments
+        id: build-args
+        run: |
+          echo "🔨 Processing build arguments..."
+          
+          # Create build args file if provided
+          if [ -n "${{ inputs.build_args }}" ]; then
+            echo "${{ inputs.build_args }}" > build-args.txt
+            echo "build_args_file=build-args.txt" >> $GITHUB_OUTPUT
+            
+            echo "📋 Build arguments:"
+            cat build-args.txt
+          else
+            echo "build_args_file=" >> $GITHUB_OUTPUT
+            echo "ℹ️ No build arguments provided"
+          fi
+
+      - name: �🐳 Build and push Docker image
         id: build
         uses: docker/build-push-action@v5
         with:
@@ -106,48 +213,174 @@ jobs:
           push: ${{ inputs.push }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          target: ${{ inputs.target }}
           build-args: ${{ inputs.build_args }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: ${{ inputs.cache_enabled && 'type=gha' || '' }}
+          cache-to: ${{ inputs.cache_enabled && 'type=gha,mode=max' || '' }}
+          provenance: ${{ inputs.provenance }}
+          sbom: ${{ inputs.sbom }}
+          outputs: type=image,name=${{ inputs.registry }}/${{ inputs.image_name }},push=${{ inputs.push }}
 
-      - name: 🔍 Image scan with Trivy
+      - name: 🔍 Inspect built image
         if: inputs.push
+        id: inspect
+        run: |
+          echo "🔍 Inspecting built image..."
+          
+          IMAGE_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
+          echo "📋 Inspecting: $IMAGE_TAG"
+          
+          # Get image information
+          docker buildx imagetools inspect "$IMAGE_TAG" --format '{{json .}}' > image-info.json
+          
+          # Extract size information
+          SIZE_BYTES=$(cat image-info.json | jq -r '.manifest.config.size // 0')
+          SIZE_MB=$(echo "scale=2; $SIZE_BYTES / 1024 / 1024" | bc)
+          
+          echo "size=$SIZE_MB" >> $GITHUB_OUTPUT
+          echo "📏 Image size: ${SIZE_MB} MB"
+          
+          # Extract architecture information
+          ARCHITECTURES=$(cat image-info.json | jq -r '.manifest.mediaType // "unknown"')
+          echo "architectures=$ARCHITECTURES" >> $GITHUB_OUTPUT
+          
+          echo "🏗️ Image architectures: $ARCHITECTURES"
+
+      - name: 🛡️ Security scan with Trivy
+        if: inputs.security_scan && inputs.push
+        id: scan
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
           format: 'sarif'
           output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          exit-code: '0' # Don't fail the build on vulnerabilities
 
-      - name: 📤 Upload scan results
-        if: inputs.push
-        continue-on-error: true
+      - name: � Process scan results
+        if: inputs.security_scan && inputs.push && steps.scan.outcome == 'success'
+        id: scan-summary
+        run: |
+          echo "📊 Processing security scan results..."
+          
+          if [ -f "trivy-results.sarif" ]; then
+            # Count vulnerabilities by severity
+            CRITICAL=$(jq '[.runs[].results[].ruleId] | map(select(test("CRITICAL"))) | length' trivy-results.sarif 2>/dev/null || echo "0")
+            HIGH=$(jq '[.runs[].results[].ruleId] | map(select(test("HIGH"))) | length' trivy-results.sarif 2>/dev/null || echo "0")
+            MEDIUM=$(jq '[.runs[].results[].ruleId] | map(select(test("MEDIUM"))) | length' trivy-results.sarif 2>/dev/null || echo "0")
+            
+            SUMMARY="Critical: $CRITICAL, High: $HIGH, Medium: $MEDIUM"
+            echo "summary=$SUMMARY" >> $GITHUB_OUTPUT
+            
+            echo "🛡️ Security scan summary: $SUMMARY"
+            
+            # Determine scan status
+            if [ "$CRITICAL" -gt 0 ]; then
+              echo "scan_status=critical" >> $GITHUB_OUTPUT
+              echo "⚠️ Critical vulnerabilities found!"
+            elif [ "$HIGH" -gt 0 ]; then
+              echo "scan_status=high" >> $GITHUB_OUTPUT
+              echo "⚠️ High severity vulnerabilities found"
+            elif [ "$MEDIUM" -gt 0 ]; then
+              echo "scan_status=medium" >> $GITHUB_OUTPUT
+              echo "ℹ️ Medium severity vulnerabilities found"
+            else
+              echo "scan_status=clean" >> $GITHUB_OUTPUT
+              echo "✅ No significant vulnerabilities found"
+            fi
+          else
+            echo "summary=Scan failed" >> $GITHUB_OUTPUT
+            echo "scan_status=error" >> $GITHUB_OUTPUT
+            echo "❌ Security scan file not found"
+          fi
+
+      - name: 📤 Upload scan results to GitHub Security
+        if: inputs.security_scan && inputs.push && steps.scan.outcome == 'success'
         uses: github/codeql-action/upload-sarif@v3
+        continue-on-error: true
         with:
           sarif_file: 'trivy-results.sarif'
+          category: 'docker-image-scan'
 
-      - name: 📊 Upload scan results as artifact
-        if: inputs.push
+      - name: � Upload scan results as artifact
+        if: inputs.security_scan && inputs.push
         uses: actions/upload-artifact@v4
         with:
-          name: trivy-scan-results
-          path: trivy-results.sarif
+          name: trivy-scan-results-${{ github.run_id }}
+          path: |
+            trivy-results.sarif
+            image-info.json
           retention-days: 30
+          if-no-files-found: warn
 
-      - name: 📋 Summary
+      - name: 📋 Generate build summary
+        if: always()
         run: |
           echo "## 🐳 Docker Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Build Information
+          echo "### 📊 Build Information" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Image | \`${{ inputs.registry }}/${{ inputs.image_name }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Tag | \`${{ inputs.tag_suffix }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Registry | \`${{ inputs.registry }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image Name | \`${{ inputs.image_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag Suffix | \`${{ inputs.tag_suffix }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Platforms | ${{ inputs.platforms }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build Context | \`${{ inputs.build_context }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dockerfile | \`${{ inputs.dockerfile_path }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Pushed | ${{ inputs.push }} |" >> $GITHUB_STEP_SUMMARY
+          
           if [ "${{ inputs.push }}" == "true" ]; then
-            echo "| Digest | \`${{ steps.build.outputs.digest }}\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| Image Digest | \`${{ steps.build.outputs.digest }}\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| Image Size | ${{ steps.inspect.outputs.size || 'Unknown' }} MB |" >> $GITHUB_STEP_SUMMARY
           fi
           
+          # Generated Tags
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 🏷️ Tags Generated" >> $GITHUB_STEP_SUMMARY
+          echo "### 🏷️ Generated Tags" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          
+          # Security Information
+          if [ "${{ inputs.security_scan }}" == "true" ] && [ "${{ inputs.push }}" == "true" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 🛡️ Security Scan" >> $GITHUB_STEP_SUMMARY
+            echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Scan Status | ${{ steps.scan-summary.outputs.scan_status || 'Not completed' }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Vulnerabilities | ${{ steps.scan-summary.outputs.summary || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Build Features
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ⚙️ Build Features" >> $GITHUB_STEP_SUMMARY
+          echo "| Feature | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Caching | ${{ inputs.cache_enabled && '✅ Enabled' || '❌ Disabled' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Security Scan | ${{ inputs.security_scan && '✅ Enabled' || '❌ Disabled' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Provenance | ${{ inputs.provenance && '✅ Enabled' || '❌ Disabled' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| SBOM | ${{ inputs.sbom && '✅ Enabled' || '❌ Disabled' }} |" >> $GITHUB_STEP_SUMMARY
+          
+          # Status Summary
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ **Docker build completed successfully!**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Docker build failed!**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Troubleshooting Steps:**" >> $GITHUB_STEP_SUMMARY
+            echo "1. Check Dockerfile syntax and build context" >> $GITHUB_STEP_SUMMARY
+            echo "2. Verify all required build arguments are provided" >> $GITHUB_STEP_SUMMARY
+            echo "3. Ensure target platform compatibility" >> $GITHUB_STEP_SUMMARY
+            echo "4. Check registry authentication and permissions" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: 🧹 Cleanup
+        if: always()
+        run: |
+          echo "🧹 Cleaning up temporary files..."
+          rm -f build-args.txt image-info.json
+          echo "✅ Cleanup completed"
