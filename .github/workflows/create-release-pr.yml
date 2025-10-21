@@ -110,7 +110,9 @@ jobs:
             else
               echo "ℹ️  No new commits - branches are in sync"
             fi
-          fi      - name: Generate release notes
+          fi
+
+      - name: Generate release notes
         if: steps.branch.outputs.has_changes == 'true'
         id: notes
         uses: Epilogik/epilogik-shared-workflows/actions/release-notes@v1
