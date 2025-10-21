@@ -1,0 +1,138 @@
+# Example: Complete .NET Deployment Workflow
+
+# Copy this file to your .NET repository at:
+# .github/workflows/deploy.yml
+
+name: Deploy .NET Application
+
+on:
+  push:
+    branches:
+      - develop       # Auto-deploy to staging
+      - release/**    # Auto-deploy to production
+      - main          # Tag and cleanup
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: 'Version bump type (major, minor, patch, or specific version like 1.2.3)'
+        required: false
+        default: 'patch'
+        type: choice
+        options:
+          - major
+          - minor
+          - patch
+
+jobs:
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # STAGING DEPLOYMENT (develop branch)
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  deploy-staging:
+    name: 🚀 Deploy to Staging
+    if: github.ref == 'refs/heads/develop'
+    uses: Epilogik/epilogik-shared-workflows/.github/workflows/deploy-hostinger.yml@v1
+    with:
+      environment: staging
+      deploy_path: /home/deploy/myapp
+      compose_files: docker-compose.yml
+      docker_network: myapp-network
+      wait_for_health: true
+      cleanup_images: true
+    secrets:
+      ssh_host: ${{ secrets.STAGING_SSH_HOST }}
+      ssh_user: ${{ secrets.STAGING_SSH_USER }}
+      ssh_port: ${{ secrets.STAGING_SSH_PORT }}
+      ssh_key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # CREATE RELEASE PR (after staging deployment)
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  create-release:
+    name: 📦 Create Release PR
+    if: github.ref == 'refs/heads/develop' || github.event_name == 'workflow_dispatch'
+    needs: deploy-staging
+    uses: Epilogik/epilogik-shared-workflows/.github/workflows/create-release-pr.yml@v1
+    with:
+      base_branch: develop
+      bump_type: ${{ github.event.inputs.version_bump || 'patch' }}
+      tag_prefix: v
+      auto_merge: false
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # PRODUCTION DEPLOYMENT (release/** branches)
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  deploy-production:
+    name: 🚀 Deploy to Production
+    if: startsWith(github.ref, 'refs/heads/release/')
+    uses: Epilogik/epilogik-shared-workflows/.github/workflows/deploy-hostinger.yml@v1
+    with:
+      environment: production
+      deploy_path: /home/deploy/myapp
+      compose_files: docker-compose.yml
+      docker_network: myapp-network
+      wait_for_health: true
+      cleanup_images: true
+    secrets:
+      ssh_host: ${{ secrets.PROD_SSH_HOST }}
+      ssh_user: ${{ secrets.PROD_SSH_USER }}
+      ssh_port: ${{ secrets.PROD_SSH_PORT }}
+      ssh_key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # TAG AND CLEANUP (main branch)
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  tag-release:
+    name: 🏷️ Tag and Cleanup
+    if: github.ref == 'refs/heads/main'
+    uses: Epilogik/epilogik-shared-workflows/.github/workflows/tag-and-cleanup.yml@v1
+    with:
+      tag_prefix: v
+      create_github_release: true
+      delete_release_branch: true
+      main_branch: main
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# REQUIRED SECRETS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#
+# Go to Settings → Secrets and variables → Actions
+#
+# Required:
+#   SSH_PRIVATE_KEY       - Your SSH private key (with BEGIN/END markers)
+#   STAGING_SSH_HOST      - Staging server IP (e.g., 185.139.1.15)
+#   STAGING_SSH_USER      - Staging SSH user (e.g., root)
+#   PROD_SSH_HOST         - Production server IP (e.g., 31.97.173.8)
+#   PROD_SSH_USER         - Production SSH user (e.g., root)
+#
+# Optional:
+#   STAGING_SSH_PORT      - Staging SSH port (default: 22)
+#   PROD_SSH_PORT         - Production SSH port (default: 22)
+#
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# REQUIRED ENVIRONMENTS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#
+# Go to Settings → Environments
+#
+# Create two environments:
+#   1. staging     - No protection rules
+#   2. production  - Optional: Add required reviewers
+#
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# WORKFLOW STEPS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#
+# 1. Push to develop
+#    → Deploys to staging
+#    → Creates release PR (develop → release/X.Y.Z)
+#
+# 2. Merge release PR
+#    → Deploys to production
+#    → Creates main PR (release/X.Y.Z → main)
+#
+# 3. Merge main PR
+#    → Creates tag vX.Y.Z
+#    → Creates GitHub Release
+#    → Deletes release branch
+#
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
