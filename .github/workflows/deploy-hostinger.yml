@@ -1,0 +1,108 @@
+name: Deploy to Hostinger
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Deployment environment (staging/production)'
+        required: true
+        type: string
+      deploy_path:
+        description: 'Deployment path on server'
+        required: true
+        type: string
+      compose_files:
+        description: 'Docker compose files to deploy (comma separated)'
+        required: false
+        type: string
+        default: 'docker-compose.infra.yml,docker-compose.services.yml'
+      docker_network:
+        description: 'Docker network name'
+        required: false
+        type: string
+        default: 'epilogik-net'
+      wait_for_health:
+        description: 'Wait for services to be healthy'
+        required: false
+        type: boolean
+        default: true
+      cleanup_images:
+        description: 'Cleanup old Docker images'
+        required: false
+        type: boolean
+        default: true
+      source_path:
+        description: 'Source path for compose files (e.g., staging/)'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      ssh_host:
+        required: true
+      ssh_user:
+        required: true
+      ssh_port:
+        required: false
+      ssh_key:
+        required: true
+    outputs:
+      deployment_status:
+        description: 'Deployment status'
+        value: ${{ jobs.deploy.outputs.status }}
+      deployed_services:
+        description: 'Deployed services'
+        value: ${{ jobs.deploy.outputs.services }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: 
+      name: ${{ inputs.environment }}
+      url: https://${{ secrets.ssh_host }}
+    outputs:
+      status: ${{ steps.deploy.outputs.deployment_status }}
+      services: ${{ steps.deploy.outputs.deployed_services }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy to Hostinger
+        id: deploy
+        uses: Epilogik/epilogik-shared-workflows/actions/ssh-deploy@v1
+        with:
+          ssh_host: ${{ secrets.ssh_host }}
+          ssh_user: ${{ secrets.ssh_user }}
+          ssh_port: ${{ secrets.ssh_port || '22' }}
+          ssh_key: ${{ secrets.ssh_key }}
+          deploy_path: ${{ inputs.deploy_path }}
+          environment: ${{ inputs.environment }}
+          compose_files: ${{ inputs.compose_files }}
+          docker_network: ${{ inputs.docker_network }}
+          wait_for_health: ${{ inputs.wait_for_health }}
+          cleanup_images: ${{ inputs.cleanup_images }}
+
+      - name: Deployment Summary
+        if: success()
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🚀 Deployment Summary"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Environment:  ${{ inputs.environment }}"
+          echo "Host:         ${{ secrets.ssh_host }}"
+          echo "Path:         ${{ inputs.deploy_path }}/${{ inputs.environment }}"
+          echo "Files:        ${{ inputs.compose_files }}"
+          echo "Status:       ✅ SUCCESS"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "❌ Deployment Failed"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Environment:  ${{ inputs.environment }}"
+          echo "Host:         ${{ secrets.ssh_host }}"
+          echo "Please check logs above for details"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          exit 1

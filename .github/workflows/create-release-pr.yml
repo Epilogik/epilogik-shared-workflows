@@ -1,0 +1,172 @@
+name: Create Release PR
+
+on:
+  workflow_call:
+    inputs:
+      base_branch:
+        description: 'Base branch (e.g., develop)'
+        required: false
+        type: string
+        default: 'develop'
+      bump_type:
+        description: 'Version bump type (major, minor, patch, or specific version)'
+        required: false
+        type: string
+        default: 'patch'
+      tag_prefix:
+        description: 'Tag prefix (e.g., "v")'
+        required: false
+        type: string
+        default: 'v'
+      auto_merge:
+        description: 'Enable auto-merge on PR'
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      release_version:
+        description: 'Calculated release version'
+        value: ${{ jobs.create-pr.outputs.version }}
+      release_branch:
+        description: 'Release branch name'
+        value: ${{ jobs.create-pr.outputs.branch }}
+      pr_number:
+        description: 'Pull request number'
+        value: ${{ jobs.create-pr.outputs.pr_number }}
+
+jobs:
+  create-pr:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.next_version }}
+      branch: ${{ steps.version.outputs.release_branch }}
+      pr_number: ${{ steps.create-pr.outputs.pr_number }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.base_branch }}
+
+      - name: Setup Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Calculate next version
+        id: version
+        uses: Epilogik/epilogik-shared-workflows/actions/semantic-version@v1
+        with:
+          bump_type: ${{ inputs.bump_type }}
+          tag_prefix: ${{ inputs.tag_prefix }}
+
+      - name: Check existing branch and PR
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE_BRANCH="${{ steps.version.outputs.release_branch }}"
+          
+          # Check if release branch exists
+          if git ls-remote --heads origin "$RELEASE_BRANCH" | grep -q "$RELEASE_BRANCH"; then
+            echo "branch_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "branch_exists=false" >> $GITHUB_OUTPUT
+          fi
+          
+          # Check if PR exists
+          PR_COUNT=$(gh pr list --head ${{ inputs.base_branch }} --base "$RELEASE_BRANCH" --state open --json number --jq length)
+          if [ "$PR_COUNT" -gt 0 ]; then
+            PR_NUMBER=$(gh pr list --head ${{ inputs.base_branch }} --base "$RELEASE_BRANCH" --state open --json number --jq '.[0].number')
+            echo "pr_exists=true" >> $GITHUB_OUTPUT
+            echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          else
+            echo "pr_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create or update release branch
+        run: |
+          RELEASE_BRANCH="${{ steps.version.outputs.release_branch }}"
+          
+          if [ "${{ steps.check.outputs.branch_exists }}" == "false" ]; then
+            echo "🆕 Creating $RELEASE_BRANCH from ${{ inputs.base_branch }}..."
+            git checkout -b "$RELEASE_BRANCH"
+            git push origin "$RELEASE_BRANCH"
+          fi
+          
+          # Check for differences
+          git fetch origin "$RELEASE_BRANCH"
+          git fetch origin ${{ inputs.base_branch }}
+          DIFF_COUNT=$(git rev-list --count origin/$RELEASE_BRANCH..origin/${{ inputs.base_branch }})
+          
+          echo "has_changes=$([ "$DIFF_COUNT" -gt 0 ] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+          echo "diff_count=$DIFF_COUNT" >> $GITHUB_OUTPUT
+
+      - name: Generate release notes
+        if: steps.check.outputs.has_changes == 'true' || steps.check.outputs.branch_exists == 'false'
+        id: notes
+        uses: Epilogik/epilogik-shared-workflows/actions/release-notes@v1
+        with:
+          from_tag: ${{ steps.version.outputs.current_tag }}
+          to_ref: ${{ inputs.base_branch }}
+          format: 'markdown'
+          group_by: 'type'
+
+      - name: Create or update PR
+        id: create-pr
+        if: steps.check.outputs.has_changes == 'true' || steps.check.outputs.branch_exists == 'false'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE_BRANCH="${{ steps.version.outputs.release_branch }}"
+          VERSION="${{ steps.version.outputs.next_version }}"
+          
+          PR_BODY="## 🚀 Release v$VERSION
+
+          ### 📋 Version Information
+          - **Previous:** ${{ steps.version.outputs.current_tag }}
+          - **New:** ${{ steps.version.outputs.next_tag }}
+          - **Branch:** \`${{ inputs.base_branch }}\` → \`$RELEASE_BRANCH\`
+
+          ### 📝 Changes
+          ${{ steps.notes.outputs.release_notes }}
+
+          ### ✅ Checklist
+          - [ ] Code reviewed
+          - [ ] Tests passing
+          - [ ] Documentation updated
+
+          ### 🎯 Next Steps
+          1. Review the changes
+          2. Merge this PR to update release branch
+          3. Production deployment will start automatically
+
+          ---
+          **Auto-generated** • $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+
+          if [ "${{ steps.check.outputs.pr_exists }}" == "false" ]; then
+            echo "🆕 Creating new PR..."
+            PR_URL=$(gh pr create \
+              --title "🚀 Release v$VERSION" \
+              --body "$PR_BODY" \
+              --base "$RELEASE_BRANCH" \
+              --head ${{ inputs.base_branch }})
+            
+            PR_NUMBER=$(echo "$PR_URL" | grep -oP '\d+$')
+            echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+            
+            ${{ inputs.auto_merge && 'gh pr merge $PR_NUMBER --auto --squash' || 'echo "Auto-merge disabled"' }}
+          else
+            echo "🔄 Updating existing PR..."
+            gh pr comment "${{ steps.check.outputs.pr_number }}" --body "🔄 **Updated** • $(date -u +'%Y-%m-%d %H:%M:%S UTC')\n\n${{ steps.notes.outputs.release_notes }}"
+            echo "pr_number=${{ steps.check.outputs.pr_number }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Summary
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📦 Release v${{ steps.version.outputs.next_version }}"
+          echo "🌿 Branch: ${{ steps.version.outputs.release_branch }}"
+          echo "📝 Commits: ${{ steps.notes.outputs.commit_count }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

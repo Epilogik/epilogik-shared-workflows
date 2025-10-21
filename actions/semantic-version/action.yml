@@ -1,0 +1,123 @@
+name: 'Semantic Version Calculator'
+description: 'Calculate next semantic version based on git tags and bump type'
+author: 'Epilogik'
+
+inputs:
+  bump_type:
+    description: 'Version bump type (major, minor, patch, or specific version like 1.2.3)'
+    required: false
+    default: 'patch'
+  tag_prefix:
+    description: 'Tag prefix (e.g., "v" for v1.0.0)'
+    required: false
+    default: 'v'
+  default_version:
+    description: 'Default version if no tags exist'
+    required: false
+    default: '0.0.0'
+
+outputs:
+  current_version:
+    description: 'Current version from latest tag'
+    value: ${{ steps.calculate.outputs.current_version }}
+  next_version:
+    description: 'Next calculated version'
+    value: ${{ steps.calculate.outputs.next_version }}
+  current_tag:
+    description: 'Current tag with prefix'
+    value: ${{ steps.calculate.outputs.current_tag }}
+  next_tag:
+    description: 'Next tag with prefix'
+    value: ${{ steps.calculate.outputs.next_tag }}
+  release_branch:
+    description: 'Suggested release branch name'
+    value: ${{ steps.calculate.outputs.release_branch }}
+  major:
+    description: 'Major version number'
+    value: ${{ steps.calculate.outputs.major }}
+  minor:
+    description: 'Minor version number'
+    value: ${{ steps.calculate.outputs.minor }}
+  patch:
+    description: 'Patch version number'
+    value: ${{ steps.calculate.outputs.patch }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Calculate version
+      id: calculate
+      shell: bash
+      run: |
+        # Fetch all tags
+        git fetch --tags --force
+        
+        # Get latest semantic version tag
+        PREFIX="${{ inputs.tag_prefix }}"
+        LATEST_TAG=$(git tag -l "${PREFIX}*.*.*" | sort -V | tail -n 1)
+        
+        if [ -z "$LATEST_TAG" ]; then
+          echo "ℹ️  No existing tags found"
+          LATEST_TAG="${PREFIX}${{ inputs.default_version }}"
+          CURRENT_VERSION="${{ inputs.default_version }}"
+        else
+          echo "📦 Latest tag: $LATEST_TAG"
+          CURRENT_VERSION="${LATEST_TAG#$PREFIX}"
+        fi
+        
+        # Extract version numbers
+        IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+        
+        # Determine bump type
+        BUMP_TYPE="${{ inputs.bump_type }}"
+        
+        # Calculate next version
+        if [[ "$BUMP_TYPE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          # Specific version provided
+          NEXT_VERSION="$BUMP_TYPE"
+        else
+          # Bump based on type
+          case "$BUMP_TYPE" in
+            major)
+              NEXT_VERSION="$((MAJOR + 1)).0.0"
+              ;;
+            minor)
+              NEXT_VERSION="$MAJOR.$((MINOR + 1)).0"
+              ;;
+            patch)
+              NEXT_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
+              ;;
+            *)
+              echo "❌ Invalid bump type: $BUMP_TYPE"
+              echo "Valid values: major, minor, patch, or specific version (e.g., 1.2.3)"
+              exit 1
+              ;;
+          esac
+        fi
+        
+        # Extract components of next version
+        IFS='.' read -r NEXT_MAJOR NEXT_MINOR NEXT_PATCH <<< "$NEXT_VERSION"
+        
+        # Set outputs
+        echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+        echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
+        echo "current_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+        echo "next_tag=${PREFIX}${NEXT_VERSION}" >> $GITHUB_OUTPUT
+        echo "release_branch=release/$NEXT_VERSION" >> $GITHUB_OUTPUT
+        echo "major=$NEXT_MAJOR" >> $GITHUB_OUTPUT
+        echo "minor=$NEXT_MINOR" >> $GITHUB_OUTPUT
+        echo "patch=$NEXT_PATCH" >> $GITHUB_OUTPUT
+        
+        # Summary
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "📊 Version Calculation"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Current: $CURRENT_VERSION ($LATEST_TAG)"
+        echo "Next:    $NEXT_VERSION (${PREFIX}${NEXT_VERSION})"
+        echo "Bump:    $BUMP_TYPE"
+        echo "Branch:  release/$NEXT_VERSION"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+branding:
+  icon: 'tag'
+  color: 'green'

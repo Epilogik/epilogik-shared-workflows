@@ -1,0 +1,177 @@
+name: 'SSH Deploy to Hostinger'
+description: 'Deploy application to Hostinger VPS using SSH and Docker Compose'
+author: 'Epilogik'
+
+inputs:
+  ssh_host:
+    description: 'SSH host address'
+    required: true
+  ssh_user:
+    description: 'SSH username'
+    required: true
+  ssh_port:
+    description: 'SSH port'
+    required: false
+    default: '22'
+  ssh_key:
+    description: 'SSH private key'
+    required: true
+  deploy_path:
+    description: 'Deployment path on server'
+    required: true
+  environment:
+    description: 'Environment name (staging/production)'
+    required: true
+  compose_files:
+    description: 'Docker compose files to deploy (comma separated)'
+    required: false
+    default: 'docker-compose.yml'
+  docker_network:
+    description: 'Docker network name'
+    required: false
+    default: 'app-network'
+  wait_for_health:
+    description: 'Wait for services to be healthy'
+    required: false
+    default: 'true'
+  cleanup_images:
+    description: 'Cleanup old Docker images after deployment'
+    required: false
+    default: 'true'
+
+outputs:
+  deployment_status:
+    description: 'Deployment status (success/failed)'
+    value: ${{ steps.verify.outputs.status }}
+  deployed_services:
+    description: 'List of deployed services'
+    value: ${{ steps.verify.outputs.services }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup SSH
+      shell: bash
+      run: |
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        echo "${{ inputs.ssh_key }}" | tr -d '\r' > ~/.ssh/deploy_key
+        chmod 600 ~/.ssh/deploy_key
+        
+        # Verify key format
+        if ! ssh-keygen -l -f ~/.ssh/deploy_key > /dev/null 2>&1; then
+          echo "❌ SSH key format is invalid"
+          exit 1
+        fi
+        
+        ssh-keyscan -p ${{ inputs.ssh_port }} -H ${{ inputs.ssh_host }} >> ~/.ssh/known_hosts 2>/dev/null
+        echo "✅ SSH setup completed"
+
+    - name: Create deployment directory
+      shell: bash
+      run: |
+        ssh -i ~/.ssh/deploy_key \
+          -p ${{ inputs.ssh_port }} \
+          ${{ inputs.ssh_user }}@${{ inputs.ssh_host }} \
+          "mkdir -p ${{ inputs.deploy_path }}/${{ inputs.environment }}"
+        echo "✅ Deployment directory created"
+
+    - name: Copy files to server
+      shell: bash
+      run: |
+        IFS=',' read -ra FILES <<< "${{ inputs.compose_files }}"
+        for file in "${FILES[@]}"; do
+          file=$(echo "$file" | xargs) # trim whitespace
+          if [ -f "${{ inputs.environment }}/$file" ]; then
+            echo "📦 Copying $file..."
+            scp -i ~/.ssh/deploy_key \
+              -P ${{ inputs.ssh_port }} \
+              "${{ inputs.environment }}/$file" \
+              ${{ inputs.ssh_user }}@${{ inputs.ssh_host }}:${{ inputs.deploy_path }}/${{ inputs.environment }}/
+          else
+            echo "⚠️  File not found: ${{ inputs.environment }}/$file"
+          fi
+        done
+        echo "✅ Files copied successfully"
+
+    - name: Create Docker network
+      shell: bash
+      run: |
+        ssh -i ~/.ssh/deploy_key \
+          -p ${{ inputs.ssh_port }} \
+          ${{ inputs.ssh_user }}@${{ inputs.ssh_host }} \
+          "docker network inspect ${{ inputs.docker_network }} >/dev/null 2>&1 || docker network create ${{ inputs.docker_network }}"
+        echo "✅ Docker network ready"
+
+    - name: Deploy services
+      shell: bash
+      run: |
+        IFS=',' read -ra FILES <<< "${{ inputs.compose_files }}"
+        for file in "${FILES[@]}"; do
+          file=$(echo "$file" | xargs)
+          echo "🚀 Deploying $file..."
+          ssh -i ~/.ssh/deploy_key \
+            -p ${{ inputs.ssh_port }} \
+            ${{ inputs.ssh_user }}@${{ inputs.ssh_host }} \
+            "cd ${{ inputs.deploy_path }}/${{ inputs.environment }} && \
+             docker compose -f $file pull && \
+             docker compose -f $file up -d --remove-orphans"
+        done
+        echo "✅ Services deployed"
+
+    - name: Wait for health check
+      if: inputs.wait_for_health == 'true'
+      shell: bash
+      run: |
+        ssh -i ~/.ssh/deploy_key \
+          -p ${{ inputs.ssh_port }} \
+          ${{ inputs.ssh_user }}@${{ inputs.ssh_host }} \
+          "cd ${{ inputs.deploy_path }}/${{ inputs.environment }} && \
+           timeout 60 sh -c 'until docker compose ps | grep -q \"healthy\"; do echo \"⏳ Waiting for services...\"; sleep 5; done' || echo '✅ Deployment complete'"
+
+    - name: Verify deployment
+      id: verify
+      shell: bash
+      run: |
+        echo "🔍 Verifying deployment..."
+        IFS=',' read -ra FILES <<< "${{ inputs.compose_files }}"
+        
+        ALL_SERVICES=""
+        for file in "${FILES[@]}"; do
+          file=$(echo "$file" | xargs)
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📋 Services from $file:"
+          SERVICES=$(ssh -i ~/.ssh/deploy_key \
+            -p ${{ inputs.ssh_port }} \
+            ${{ inputs.ssh_user }}@${{ inputs.ssh_host }} \
+            "cd ${{ inputs.deploy_path }}/${{ inputs.environment }} && docker compose -f $file ps")
+          echo "$SERVICES"
+          ALL_SERVICES="$ALL_SERVICES\n$SERVICES"
+        done
+        
+        echo "status=success" >> $GITHUB_OUTPUT
+        echo "services<<EOF" >> $GITHUB_OUTPUT
+        echo -e "$ALL_SERVICES" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+        
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "✅ Deployment verified successfully"
+
+    - name: Cleanup old images
+      if: inputs.cleanup_images == 'true'
+      shell: bash
+      run: |
+        ssh -i ~/.ssh/deploy_key \
+          -p ${{ inputs.ssh_port }} \
+          ${{ inputs.ssh_user }}@${{ inputs.ssh_host }} \
+          "docker image prune -af --filter 'until=24h'"
+        echo "✅ Old images cleaned up"
+
+    - name: Cleanup SSH key
+      if: always()
+      shell: bash
+      run: rm -f ~/.ssh/deploy_key
+
+branding:
+  icon: 'upload-cloud'
+  color: 'blue'

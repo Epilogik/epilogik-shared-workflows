@@ -1,0 +1,115 @@
+name: 'Release Notes Generator'
+description: 'Generate release notes from git commits between tags'
+author: 'Epilogik'
+
+inputs:
+  from_tag:
+    description: 'Starting tag (leave empty for last tag)'
+    required: false
+  to_ref:
+    description: 'Ending ref (commit, branch, or tag)'
+    required: false
+    default: 'HEAD'
+  format:
+    description: 'Output format (markdown, plain, json)'
+    required: false
+    default: 'markdown'
+  include_merge_commits:
+    description: 'Include merge commits in notes'
+    required: false
+    default: 'false'
+  group_by:
+    description: 'Group commits by (type, scope, none)'
+    required: false
+    default: 'type'
+
+outputs:
+  release_notes:
+    description: 'Generated release notes'
+    value: ${{ steps.generate.outputs.release_notes }}
+  commit_count:
+    description: 'Number of commits included'
+    value: ${{ steps.generate.outputs.commit_count }}
+  compare_url:
+    description: 'GitHub compare URL'
+    value: ${{ steps.generate.outputs.compare_url }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Generate release notes
+      id: generate
+      shell: bash
+      run: |
+        # Determine from tag
+        if [ -z "${{ inputs.from_tag }}" ]; then
+          FROM_TAG=$(git tag -l "v*.*.*" | sort -V | tail -n 1)
+        else
+          FROM_TAG="${{ inputs.from_tag }}"
+        fi
+        
+        TO_REF="${{ inputs.to_ref }}"
+        
+        # Build git log command
+        LOG_CMD="git log --pretty=format:'%s|%h|%an|%ai'"
+        
+        if [ "${{ inputs.include_merge_commits }}" == "false" ]; then
+          LOG_CMD="$LOG_CMD --no-merges"
+        fi
+        
+        if [ -n "$FROM_TAG" ]; then
+          LOG_CMD="$LOG_CMD $FROM_TAG..$TO_REF"
+          COMPARE_URL="https://github.com/${{ github.repository }}/compare/$FROM_TAG...$TO_REF"
+        else
+          LOG_CMD="$LOG_CMD $TO_REF"
+          COMPARE_URL=""
+        fi
+        
+        # Get commits
+        COMMITS=$(eval "$LOG_CMD")
+        COMMIT_COUNT=$(echo "$COMMITS" | wc -l)
+        
+        # Generate notes based on format
+        if [ "${{ inputs.format }}" == "markdown" ]; then
+          NOTES=""
+          
+          if [ "${{ inputs.group_by }}" == "type" ]; then
+            # Group by conventional commit type
+            FEATURES=$(echo "$COMMITS" | grep "^feat" || true)
+            FIXES=$(echo "$COMMITS" | grep "^fix" || true)
+            DOCS=$(echo "$COMMITS" | grep "^docs" || true)
+            CHORES=$(echo "$COMMITS" | grep "^chore" || true)
+            OTHERS=$(echo "$COMMITS" | grep -v "^feat\|^fix\|^docs\|^chore" || true)
+            
+            [ -n "$FEATURES" ] && NOTES="$NOTES### ✨ Features\n$(echo "$FEATURES" | while IFS='|' read -r msg hash author date; do echo "- $msg (\`$hash\`)"; done)\n\n"
+            [ -n "$FIXES" ] && NOTES="$NOTES### 🐛 Bug Fixes\n$(echo "$FIXES" | while IFS='|' read -r msg hash author date; do echo "- $msg (\`$hash\`)"; done)\n\n"
+            [ -n "$DOCS" ] && NOTES="$NOTES### 📚 Documentation\n$(echo "$DOCS" | while IFS='|' read -r msg hash author date; do echo "- $msg (\`$hash\`)"; done)\n\n"
+            [ -n "$CHORES" ] && NOTES="$NOTES### 🔧 Maintenance\n$(echo "$CHORES" | while IFS='|' read -r msg hash author date; do echo "- $msg (\`$hash\`)"; done)\n\n"
+            [ -n "$OTHERS" ] && NOTES="$NOTES### 📝 Other Changes\n$(echo "$OTHERS" | while IFS='|' read -r msg hash author date; do echo "- $msg (\`$hash\`)"; done)\n\n"
+          else
+            # Simple list
+            NOTES=$(echo "$COMMITS" | while IFS='|' read -r msg hash author date; do echo "- $msg (\`$hash\`)"; done)
+          fi
+          
+          [ -n "$COMPARE_URL" ] && NOTES="$NOTES\n**Full Changelog**: $COMPARE_URL"
+          
+        elif [ "${{ inputs.format }}" == "json" ]; then
+          NOTES=$(echo "$COMMITS" | jq -R -s -c 'split("\n") | map(select(length > 0) | split("|") | {message: .[0], hash: .[1], author: .[2], date: .[3]})')
+        else
+          # Plain format
+          NOTES=$(echo "$COMMITS" | while IFS='|' read -r msg hash author date; do echo "- $msg ($hash)"; done)
+        fi
+        
+        # Save outputs
+        echo "release_notes<<EOF" >> $GITHUB_OUTPUT
+        echo -e "$NOTES" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+        
+        echo "commit_count=$COMMIT_COUNT" >> $GITHUB_OUTPUT
+        echo "compare_url=$COMPARE_URL" >> $GITHUB_OUTPUT
+        
+        echo "✅ Generated release notes with $COMMIT_COUNT commits"
+
+branding:
+  icon: 'file-text'
+  color: 'purple'
