@@ -132,7 +132,11 @@ jobs:
           ssh -i ~/.ssh/deploy_key \
             -p ${{ secrets.ssh_port || '22' }} \
             ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} \
-            "cd ${{ secrets.deploy_path }}/${{ inputs.environment }} && $COMPOSE_CMD up -d --remove-orphans"
+            "cd ${{ secrets.deploy_path }}/${{ inputs.environment }} && \
+             echo '🔄 Stopping existing containers...' && \
+             $COMPOSE_CMD down || true && \
+             echo '🚀 Starting services...' && \
+             $COMPOSE_CMD up -d --remove-orphans"
 
       - name: Wait for services to be healthy
         if: inputs.wait_for_health
