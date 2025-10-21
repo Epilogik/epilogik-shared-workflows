@@ -7,10 +7,6 @@ on:
         description: 'Deployment environment (staging/production)'
         required: true
         type: string
-      deploy_path:
-        description: 'Deployment path on server'
-        required: true
-        type: string
       compose_files:
         description: 'Docker compose files to deploy (comma separated)'
         required: false
@@ -37,6 +33,9 @@ on:
         type: string
         default: ''
     secrets:
+      deploy_path:
+        description: 'Deployment path on server'
+        required: true
       ssh_host:
         required: true
       ssh_user:
@@ -75,7 +74,7 @@ jobs:
           ssh_user: ${{ secrets.ssh_user }}
           ssh_port: ${{ secrets.ssh_port || '22' }}
           ssh_key: ${{ secrets.ssh_key }}
-          deploy_path: ${{ inputs.deploy_path }}
+          deploy_path: ${{ secrets.deploy_path }}
           environment: ${{ inputs.environment }}
           compose_files: ${{ inputs.compose_files }}
           docker_network: ${{ inputs.docker_network }}
@@ -90,7 +89,7 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "Environment:  ${{ inputs.environment }}"
           echo "Host:         ${{ secrets.ssh_host }}"
-          echo "Path:         ${{ inputs.deploy_path }}/${{ inputs.environment }}"
+          echo "Path:         ${{ secrets.deploy_path }}/${{ inputs.environment }}"
           echo "Files:        ${{ inputs.compose_files }}"
           echo "Status:       ✅ SUCCESS"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
