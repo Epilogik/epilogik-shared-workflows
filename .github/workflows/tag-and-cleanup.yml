@@ -50,14 +50,14 @@ jobs:
 
       - name: 🔍 Detect release
         id: detect
-        uses: ./../../.github/actions/release-management/detect-release
+        uses: Epilogik/epilogik-shared-workflows/.github/actions/release-management/detect-release@main
         with:
           tag_prefix: ${{ inputs.tag_prefix }}
 
       - name: 🏷️ Check existing tag
         if: steps.detect.outputs.is_release == 'true'
         id: check-tag
-        uses: ./../../.github/actions/release-management/check-tag
+        uses: Epilogik/epilogik-shared-workflows/.github/actions/release-management/check-tag@main
         with:
           tag_name: ${{ steps.detect.outputs.next_tag }}
 
@@ -71,14 +71,14 @@ jobs:
 
       - name: 🏷️ Create Git tag
         if: steps.detect.outputs.is_release == 'true' && steps.check-tag.outputs.tag_exists == 'false'
-        uses: ./../../.github/actions/release-management/create-tag
+        uses: Epilogik/epilogik-shared-workflows/.github/actions/release-management/create-tag@main
         with:
           tag_name: ${{ steps.detect.outputs.next_tag }}
 
       - name: 🚀 Create GitHub release
         if: steps.detect.outputs.is_release == 'true' && steps.check-tag.outputs.tag_exists == 'false' && inputs.create_github_release
         id: create-release
-        uses: ./../../.github/actions/release-management/create-release
+        uses: Epilogik/epilogik-shared-workflows/.github/actions/release-management/create-release@main
         with:
           tag_name: ${{ steps.detect.outputs.next_tag }}
           version: ${{ steps.detect.outputs.version }}
@@ -87,7 +87,7 @@ jobs:
 
       - name: 🧹 Cleanup release branch
         if: steps.detect.outputs.is_release == 'true' && inputs.delete_release_branch
-        uses: ./../../.github/actions/release-management/cleanup
+        uses: Epilogik/epilogik-shared-workflows/.github/actions/release-management/cleanup@main
         with:
           release_branch: ${{ steps.detect.outputs.release_branch }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
