@@ -198,7 +198,8 @@ jobs:
           SSH_PORT="${{ secrets.ssh_port || '22' }}"
           
           # Run pre-checks remotely and capture stdout into PRECHECKS_OUT
-          PRECHECKS_OUT=$(ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'bash -s' <<'REMOTE_PRECHECKS'
+          # Run remote prechecks and save stdout to a temp file, then read it
+          ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'bash -s' <<'REMOTE_PRECHECKS' > /tmp/epilogik_prechecks.out
             set -euo pipefail
 
             echo "🐳 Checking Docker installation..."
@@ -233,7 +234,7 @@ jobs:
               echo "✅ Port ${{ inputs.host_port }} is available"
             fi
           REMOTE_PRECHECKS
-          )
+          PRECHECKS_OUT=$(cat /tmp/epilogik_prechecks.out 2>/dev/null || true)
           echo "$PRECHECKS_OUT"
           # Extract CURRENT_IMAGE marker if present
           CURRENT_IMAGE_VAL=$(echo "$PRECHECKS_OUT" | grep '^CURRENT_IMAGE=' | cut -d'=' -f2- | tr -d '\r' || true)
@@ -468,7 +469,8 @@ jobs:
             
             echo "🎉 Deployment completed successfully!"
           # Run deploy remotely and capture stdout into DEPLOY_OUT
-          DEPLOY_OUT=$(ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'bash -s' <<'REMOTE_DEPLOY'
+          # Run remote deploy and save stdout to a temp file, then read it
+          ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'bash -s' <<'REMOTE_DEPLOY' > /tmp/epilogik_deploy.out
             set -euo pipefail
 
             # Set deployment variables
@@ -521,7 +523,7 @@ jobs:
             echo "STATUS=success"
             echo "🎉 Deployment completed successfully!"
           REMOTE_DEPLOY
-          )
+          DEPLOY_OUT=$(cat /tmp/epilogik_deploy.out 2>/dev/null || true)
           echo "$DEPLOY_OUT"
           # Parse markers emitted by remote script
           CONTAINER_ID_VAL=$(echo "$DEPLOY_OUT" | grep '^CONTAINER_ID=' | cut -d'=' -f2- | tr -d '\r' || true)
@@ -552,7 +554,8 @@ jobs:
           
           SSH_PORT="${{ secrets.ssh_port || '22' }}"
           
-          POSTVERIFY_OUT=$(ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'bash -s' <<'REMOTE_POST'
+          # Run remote post-verify and save stdout to a temp file, then read it
+          ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'bash -s' <<'REMOTE_POST' > /tmp/epilogik_postverify.out
             echo "📊 Container status:"
             docker ps --filter "name=${{ inputs.container_name }}" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 
@@ -564,7 +567,7 @@ jobs:
             echo "🔗 Network connectivity:"
             docker exec ${{ inputs.container_name }} ping -c 3 google.com || true
           REMOTE_POST
-          )
+          POSTVERIFY_OUT=$(cat /tmp/epilogik_postverify.out 2>/dev/null || true)
           echo "$POSTVERIFY_OUT"
 
       - name: 📊 Generate deployment summary
