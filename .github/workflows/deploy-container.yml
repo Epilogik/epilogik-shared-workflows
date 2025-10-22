@@ -197,9 +197,9 @@ jobs:
           
           SSH_PORT="${{ secrets.ssh_port || '22' }}"
           
-          ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} << 'EOF'
+          sed 's/\r$//' << 'EOF' | ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'bash -s'
             set -e
-            
+
             echo "🐳 Checking Docker installation..."
             if ! command -v docker &> /dev/null; then
               echo "❌ Docker is not installed on the target server"
@@ -242,9 +242,9 @@ jobs:
           SSH_PORT="${{ secrets.ssh_port || '22' }}"
           
           # Connect to server and deploy
-          ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} << 'EOF'
+          sed 's/\r$//' << 'EOF' | ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'bash -s'
             set -e
-            
+
             # Set deployment variables
             CONTAINER_NAME="${{ inputs.container_name }}"
             IMAGE_NAME="${{ inputs.docker_image }}"
@@ -481,14 +481,14 @@ jobs:
           
           SSH_PORT="${{ secrets.ssh_port || '22' }}"
           
-          ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} << 'EOF'
+          sed 's/\r$//' << 'EOF' | ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'bash -s'
             echo "📊 Container status:"
             docker ps --filter "name=${{ inputs.container_name }}" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-            
+
             echo ""
             echo "💾 Container resource usage:"
             docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}" ${{ inputs.container_name }}
-            
+
             echo ""
             echo "🔗 Network connectivity:"
             docker exec ${{ inputs.container_name }} ping -c 3 google.com || true
