@@ -264,7 +264,66 @@ jobs:
             ENVIRONMENT="${{ inputs.environment }}"
             DEPLOY_STRATEGY="${{ inputs.deploy_strategy }}"
 
-            echo "🚀 Deploying $IMAGE_NAME to $ENVIRONMENT using $DEPLOY_STRATEGY strategy"
+            # Normalize image name robustly:
+            # - preserve digest (@sha256:...)
+            # - separate tag (:tag) if present
+            # - lowercase the registry/repo path
+            # - if no registry appears to be present, assume ghcr.io
+            ORIG_IMAGE="$IMAGE_NAME"
+
+            # Split out digest if present
+            if [[ "$IMAGE_NAME" == *"@"* ]]; then
+              NAME_WITH_REGISTRY="${IMAGE_NAME%@*}"
+              SUFFIX="@${IMAGE_NAME#*@}"
+            else
+              NAME_WITH_REGISTRY="$IMAGE_NAME"
+              SUFFIX=""
+            fi
+
+            # Determine tag (only if the last path segment contains a colon)
+            LAST_SEGMENT="${NAME_WITH_REGISTRY##*/}"
+            if [[ "$LAST_SEGMENT" == *":"* ]]; then
+              TAG=":${LAST_SEGMENT##*:}"
+              NAME_BASE="${NAME_WITH_REGISTRY%:*}"
+            else
+              TAG=""
+              NAME_BASE="$NAME_WITH_REGISTRY"
+            fi
+
+            # If no registry is present (first component has no '.' and no ':'), assume ghcr.io
+            FIRST_COMPONENT="${NAME_BASE%%/*}"
+            if [[ "$FIRST_COMPONENT" != *.* && "$FIRST_COMPONENT" != *:* ]]; then
+              NAME_BASE="ghcr.io/${NAME_BASE}"
+            fi
+
+            # Lowercase only the registry/repo path (keep tag and digest as-is)
+            NAME_BASE_LOWER=$(echo "$NAME_BASE" | tr '[:upper:]' '[:lower:]')
+
+            # If there's no explicit tag and no digest, default to :latest to avoid empty references
+            if [[ -z "$TAG" && -z "$SUFFIX" ]]; then
+              TAG=":latest"
+            fi
+
+            NORMALIZED_IMAGE="${NAME_BASE_LOWER}${TAG}${SUFFIX}"
+
+            # Fail-fast if resolved image is empty or still contains uppercase letters in the repo path
+            if [ -z "${NORMALIZED_IMAGE}" ]; then
+              echo "❌ Error: resolved image name is empty (original: '$ORIG_IMAGE')"
+              exit 1
+            fi
+
+            if [[ "$NORMALIZED_IMAGE" =~ [A-Z] ]]; then
+              echo "❌ Error: image name still contains uppercase characters after normalization: '$NORMALIZED_IMAGE' (original: '$ORIG_IMAGE')"
+              exit 1
+            fi
+
+            if [ "$NORMALIZED_IMAGE" != "$ORIG_IMAGE" ]; then
+              echo "⚠️ Normalized image name: '$ORIG_IMAGE' -> '$NORMALIZED_IMAGE'"
+            fi
+
+            IMAGE_TO_PULL="$NORMALIZED_IMAGE"
+
+            echo "🚀 Deploying $IMAGE_TO_PULL to $ENVIRONMENT using $DEPLOY_STRATEGY strategy"
 
             # Create backup of current state for rollback
             if docker ps -a --format "table {{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
@@ -280,13 +339,23 @@ jobs:
               docker network create ${{ inputs.docker_network }}
             fi
 
-            # Login to registry
+            # Login to registry using a temporary docker config directory to avoid writing to runner's default config
             echo "🔐 Logging into container registry..."
+            TMP_DOCKER_CONFIG=$(mktemp -d)
+            export DOCKER_CONFIG="$TMP_DOCKER_CONFIG"
             echo "${{ github.token }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-            # Pull new image
-            echo "📥 Pulling image: $IMAGE_NAME"
-            docker pull $IMAGE_NAME
+            # Pull new image (use normalized image and quote to be safe)
+            echo "📥 Pulling image: $IMAGE_TO_PULL"
+            if ! docker pull "$IMAGE_TO_PULL"; then
+              echo "❌ Failed to pull image: $IMAGE_TO_PULL"
+              # cleanup docker config before exiting
+              rm -rf "$TMP_DOCKER_CONFIG" || true
+              exit 1
+            fi
+
+            # cleanup temporary docker config
+            rm -rf "$TMP_DOCKER_CONFIG" || true
 
             # Parse environment variables
             ENV_VARS=""
