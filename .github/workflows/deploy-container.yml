@@ -197,8 +197,8 @@ jobs:
           
           SSH_PORT="${{ secrets.ssh_port || '22' }}"
           
-          sed 's/\r$//' << 'EOF' | ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'bash -s'
-            set -e
+          sed 's/\r$//' << 'EOF' | ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'cat > /tmp/epilogik_prechecks.sh && chmod +x /tmp/epilogik_prechecks.sh && bash -x /tmp/epilogik_prechecks.sh && rm -f /tmp/epilogik_prechecks.sh'
+            set -euo pipefail
 
             echo "🐳 Checking Docker installation..."
             if ! command -v docker &> /dev/null; then
@@ -242,8 +242,8 @@ jobs:
           SSH_PORT="${{ secrets.ssh_port || '22' }}"
           
           # Connect to server and deploy
-          sed 's/\r$//' << 'EOF' | ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'bash -s'
-            set -e
+          sed 's/\r$//' << 'EOF' | ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'cat > /tmp/epilogik_deploy.sh && chmod +x /tmp/epilogik_deploy.sh && bash -x /tmp/epilogik_deploy.sh && rm -f /tmp/epilogik_deploy.sh'
+            set -euo pipefail
 
             # Set deployment variables
             CONTAINER_NAME="${{ inputs.container_name }}"
@@ -481,7 +481,7 @@ jobs:
           
           SSH_PORT="${{ secrets.ssh_port || '22' }}"
           
-          sed 's/\r$//' << 'EOF' | ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'bash -s'
+          sed 's/\r$//' << 'EOF' | ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'cat > /tmp/epilogik_postverify.sh && chmod +x /tmp/epilogik_postverify.sh && bash -x /tmp/epilogik_postverify.sh && rm -f /tmp/epilogik_postverify.sh'
             echo "📊 Container status:"
             docker ps --filter "name=${{ inputs.container_name }}" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 
