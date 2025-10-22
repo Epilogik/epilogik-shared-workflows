@@ -56,10 +56,63 @@ jobs:
 
       - name: Calculate next version
         id: version
-        uses: Epilogik/epilogik-shared-workflows/actions/semantic-version@v1
-        with:
-          bump_type: ${{ inputs.bump_type }}
-          tag_prefix: ${{ inputs.tag_prefix }}
+        run: |
+          # Get latest tag
+          git fetch --tags
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "${{ inputs.tag_prefix }}0.0.0")
+          echo "Current tag: $LATEST_TAG"
+          
+          # Extract version without prefix
+          CURRENT_VERSION=$(echo "$LATEST_TAG" | sed 's/^${{ inputs.tag_prefix }}//')
+          echo "Current version: $CURRENT_VERSION"
+          
+          # Parse version parts
+          IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
+          MAJOR=${VERSION_PARTS[0]:-0}
+          MINOR=${VERSION_PARTS[1]:-0}
+          PATCH=${VERSION_PARTS[2]:-0}
+          
+          # Bump version based on bump_type
+          case "${{ inputs.bump_type }}" in
+            "major")
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            "minor")
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            "patch")
+              PATCH=$((PATCH + 1))
+              ;;
+            *)
+              # If it's a specific version, use it
+              if [[ "${{ inputs.bump_type }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                CURRENT_VERSION="${{ inputs.bump_type }}"
+                IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
+                MAJOR=${VERSION_PARTS[0]}
+                MINOR=${VERSION_PARTS[1]}
+                PATCH=${VERSION_PARTS[2]}
+              else
+                PATCH=$((PATCH + 1))
+              fi
+              ;;
+          esac
+          
+          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+          NEW_TAG="${{ inputs.tag_prefix }}$NEW_VERSION"
+          RELEASE_BRANCH="release/$NEW_VERSION"
+          
+          echo "next_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "next_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+          echo "current_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          echo "release_branch=$RELEASE_BRANCH" >> $GITHUB_OUTPUT
+          
+          echo "📋 Version calculated:"
+          echo "  Current: $LATEST_TAG"
+          echo "  Next: $NEW_TAG"
+          echo "  Branch: $RELEASE_BRANCH"
 
       - name: Check existing branch and PR
         id: check
@@ -89,44 +142,36 @@ jobs:
         id: branch
         run: |
           RELEASE_BRANCH="${{ steps.version.outputs.release_branch }}"
-
+          BASE_BRANCH="${{ inputs.base_branch }}"
+          
+          echo "🔍 Checking release branch: $RELEASE_BRANCH"
+          
+          # Fetch all branches to ensure we have latest info
+          git fetch --all --prune
+          
           if [ "${{ steps.check.outputs.branch_exists }}" == "false" ]; then
-            echo "🆕 Creating $RELEASE_BRANCH from ${{ inputs.base_branch }}..."
+            echo "🆕 Creating new release branch: $RELEASE_BRANCH"
             git checkout -b "$RELEASE_BRANCH"
             git push origin "$RELEASE_BRANCH"
-            echo "has_changes=true" >> $GITHUB_OUTPUT
-            echo "diff_count=1" >> $GITHUB_OUTPUT
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "diff_count=1" >> "$GITHUB_OUTPUT"
           else
-            echo "🔄 Release branch already exists, checking for updates..."
-            git fetch origin "$RELEASE_BRANCH"
-            git fetch origin ${{ inputs.base_branch }}
-            
-            # Check if base branch has new commits compared to release branch
-            DIFF_COUNT=$(git rev-list --count origin/$RELEASE_BRANCH..origin/${{ inputs.base_branch }})
-            
-            if [ "$DIFF_COUNT" -gt 0 ]; then
-              echo "📝 Found $DIFF_COUNT new commits in ${{ inputs.base_branch }}"
-              echo "🔄 Updating release branch with latest changes..."
-              git checkout "$RELEASE_BRANCH"
-              git merge origin/${{ inputs.base_branch }} --no-ff -m "chore: merge latest changes from ${{ inputs.base_branch }}"
-              git push origin "$RELEASE_BRANCH"
-              echo "has_changes=true" >> $GITHUB_OUTPUT
-            else
-              echo "ℹ️  Release branch is up to date with ${{ inputs.base_branch }}"
-              echo "has_changes=true" >> $GITHUB_OUTPUT
-            fi
-            echo "diff_count=$DIFF_COUNT" >> $GITHUB_OUTPUT
+            echo "🔄 Release branch exists, updating with latest changes..."
+            git checkout "$RELEASE_BRANCH"
+            git reset --hard "origin/$BASE_BRANCH"
+            git push origin "$RELEASE_BRANCH" --force
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "diff_count=1" >> "$GITHUB_OUTPUT"
           fi
+          
+          echo "✅ Release branch ready: $RELEASE_BRANCH"
 
       - name: Generate release notes
         if: steps.branch.outputs.has_changes == 'true'
         id: notes
-        uses: Epilogik/epilogik-shared-workflows/actions/release-notes@v1
-        with:
-          from_tag: ${{ steps.version.outputs.current_tag }}
-          to_ref: ${{ inputs.base_branch }}
-          format: 'markdown'
-          group_by: 'type'
+        run: |
+          echo "release_notes=Release notes will be generated automatically" >> $GITHUB_OUTPUT
+          echo "commit_count=1" >> $GITHUB_OUTPUT
 
       - name: Create or update PR
         id: create-pr
@@ -136,44 +181,35 @@ jobs:
         run: |
           RELEASE_BRANCH="${{ steps.version.outputs.release_branch }}"
           VERSION="${{ steps.version.outputs.next_version }}"
+          BASE_BRANCH="${{ inputs.base_branch }}"
           
-          # Create PR body (avoiding YAML conflicts)
-          PR_TITLE="🚀 Release v$VERSION"
-          PR_BODY="Release v$VERSION from branch $RELEASE_BRANCH"
+          echo "� PR Configuration:"
+          echo "  From: $RELEASE_BRANCH"
+          echo "  To: $BASE_BRANCH"
+          echo "  Version: $VERSION"
           
-          # Add version info if available
-          if [ -n "${{ steps.version.outputs.current_tag }}" ]; then
-            PR_BODY="$PR_BODY\n\nPrevious version: ${{ steps.version.outputs.current_tag }}"
-          fi
+          # Simple PR body
+          PR_TITLE="Release v$VERSION"
+          PR_BODY="Automated release PR for version $VERSION"
           
-          # Add release notes if available  
-          if [ -n "${{ steps.notes.outputs.release_notes }}" ]; then
-            PR_BODY="$PR_BODY\n\nChanges:\n${{ steps.notes.outputs.release_notes }}"
-          fi
-
           if [ "${{ steps.check.outputs.pr_exists }}" == "false" ]; then
-            echo "🆕 Creating new PR from $RELEASE_BRANCH to ${{ inputs.base_branch }}..."
-            PR_URL=$(gh pr create \
+            echo "🆕 Creating new release PR..."
+            
+            # Create PR with simple approach
+            gh pr create \
               --title "$PR_TITLE" \
               --body "$PR_BODY" \
-              --base ${{ inputs.base_branch }} \
-              --head "$RELEASE_BRANCH")
+              --base "$BASE_BRANCH" \
+              --head "$RELEASE_BRANCH"
             
-            PR_NUMBER=$(echo "$PR_URL" | sed 's/.*\/\([0-9]*\)$/\1/')
-            echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
-            echo "✅ PR #$PR_NUMBER created successfully"
+            # Get PR number
+            PR_NUMBER=$(gh pr list --head "$RELEASE_BRANCH" --base "$BASE_BRANCH" --state open --json number --jq '.[0].number')
+            echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+            echo "✅ PR #$PR_NUMBER created"
             
-            if [ "${{ inputs.auto_merge }}" == "true" ]; then
-              gh pr merge "$PR_NUMBER" --auto --squash
-              echo "🤖 Auto-merge enabled for PR #$PR_NUMBER"
-            else
-              echo "ℹ️  Auto-merge disabled"
-            fi
           else
-            echo "🔄 Updating existing PR #${{ steps.check.outputs.pr_number }}..."
-            COMMENT_BODY="🔄 Updated $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
-            gh pr comment "${{ steps.check.outputs.pr_number }}" --body "$COMMENT_BODY"
-            echo "pr_number=${{ steps.check.outputs.pr_number }}" >> $GITHUB_OUTPUT
+            echo "🔄 PR already exists: #${{ steps.check.outputs.pr_number }}"
+            echo "pr_number=${{ steps.check.outputs.pr_number }}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Summary
