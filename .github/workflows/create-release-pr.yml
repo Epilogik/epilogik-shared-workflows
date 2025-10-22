@@ -152,16 +152,36 @@ jobs:
           if [ "${{ steps.check.outputs.branch_exists }}" == "false" ]; then
             echo "🆕 Creating new release branch: $RELEASE_BRANCH"
             git checkout -b "$RELEASE_BRANCH"
+            
+            # Create a version bump commit to ensure there's a difference
+            echo "${{ steps.version.outputs.next_version }}" > VERSION
+            git add VERSION
+            git commit -m "chore: bump version to ${{ steps.version.outputs.next_version }}" || true
+            
             git push origin "$RELEASE_BRANCH"
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
             echo "diff_count=1" >> "$GITHUB_OUTPUT"
           else
-            echo "🔄 Release branch exists, updating with latest changes..."
+            echo "🔄 Release branch exists, checking if update needed..."
             git checkout "$RELEASE_BRANCH"
-            git reset --hard "origin/$BASE_BRANCH"
-            git push origin "$RELEASE_BRANCH" --force
+            
+            # Check if there are differences
+            DIFF_COUNT=$(git rev-list --count "origin/$RELEASE_BRANCH..origin/$BASE_BRANCH")
+            
+            if [ "$DIFF_COUNT" -gt 0 ]; then
+              echo "📝 Found $DIFF_COUNT new commits, updating release branch..."
+              git merge "origin/$BASE_BRANCH" --no-ff -m "chore: merge latest changes from $BASE_BRANCH"
+              
+              # Update version file
+              echo "${{ steps.version.outputs.next_version }}" > VERSION
+              git add VERSION
+              git commit -m "chore: update version to ${{ steps.version.outputs.next_version }}" || true
+              
+              git push origin "$RELEASE_BRANCH"
+            fi
+            
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
-            echo "diff_count=1" >> "$GITHUB_OUTPUT"
+            echo "diff_count=$DIFF_COUNT" >> "$GITHUB_OUTPUT"
           fi
           
           echo "✅ Release branch ready: $RELEASE_BRANCH"
