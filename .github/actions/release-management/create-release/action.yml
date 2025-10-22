@@ -1,0 +1,58 @@
+name: 'Create GitHub Release'
+description: 'Create GitHub release with notes'
+
+inputs:
+  tag_name:
+    description: 'Tag name for the release'
+    required: true
+  version:
+    description: 'Version number'
+    required: true
+  release_notes:
+    description: 'Release notes content'
+    required: false
+    default: ''
+  github_token:
+    description: 'GitHub token'
+    required: true
+
+outputs:
+  release_url:
+    description: 'Created release URL'
+    value: ${{ steps.create-release.outputs.url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Create GitHub Release
+      id: create-release
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+      run: |
+        TAG="${{ inputs.tag_name }}"
+        VERSION="${{ inputs.version }}"
+        
+        RELEASE_BODY="## 🚀 Release $TAG
+
+        ### 📝 Changes
+        ${{ inputs.release_notes }}
+
+        ### 🎯 Deployment Information
+        - **Staging:** ✅ Deployed and tested
+        - **Production:** ✅ Deployed and verified
+        - **Release Date:** $(date -u +'%Y-%m-%d')
+
+        ### 📦 Artifacts
+        - All services deployed and running
+        - Docker images updated
+
+        ---
+        **Released on:** $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+
+        RELEASE_URL=$(gh release create "$TAG" \
+          --title "Release $TAG" \
+          --notes "$RELEASE_BODY" \
+          --latest)
+        
+        echo "url=$RELEASE_URL" >> "$GITHUB_OUTPUT"

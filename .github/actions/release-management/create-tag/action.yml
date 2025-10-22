@@ -1,0 +1,17 @@
+name: 'Create Git Tag'
+description: 'Create and push a Git tag'
+
+inputs:
+  tag_name:
+    description: 'Tag name to create'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Create Git Tag
+      shell: bash
+      run: |
+        TAG="${{ inputs.tag_name }}"
+        git tag -a "$TAG" -m "Release $TAG"
+        git push origin "$TAG"

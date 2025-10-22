@@ -1,0 +1,87 @@
+name: '.NET CI Setup'
+description: 'Setup .NET environment and detect project structure'
+
+inputs:
+  dotnet_version:
+    description: '.NET version to use'
+    required: false
+    default: '8.0.x'
+  solution_path:
+    description: 'Path to solution file'
+    required: false
+    default: ''
+  project_path:
+    description: 'Path to project file'
+    required: false
+    default: ''
+
+outputs:
+  solution_path:
+    description: 'Detected or provided solution path'
+    value: ${{ steps.detect.outputs.solution_path }}
+  project_path:
+    description: 'Detected or provided project path'
+    value: ${{ steps.detect.outputs.project_path }}
+  test_projects:
+    description: 'Detected test projects'
+    value: ${{ steps.detect.outputs.test_projects }}
+  integration_test_projects:
+    description: 'Detected integration test projects'
+    value: ${{ steps.detect.outputs.integration_test_projects }}
+  build_version:
+    description: 'Generated build version'
+    value: ${{ steps.version.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Auto-detect project structure
+      id: detect
+      shell: bash
+      run: |
+        set -euo pipefail
+        
+        # Find solution file
+        if [ -n "${{ inputs.solution_path }}" ]; then
+          SOLUTION_PATH="${{ inputs.solution_path }}"
+        else
+          SOLUTION_PATH=$(find . -maxdepth 2 -name "*.sln" | head -1)
+        fi
+        
+        # Find project files
+        if [ -n "${{ inputs.project_path }}" ]; then
+          PROJECT_PATH="${{ inputs.project_path }}"
+        else
+          PROJECT_PATH=$(find . -name "*.csproj" -not -path "*/bin/*" -not -path "*/obj/*" | head -1)
+        fi
+        
+        # Find test projects
+        TEST_PROJECTS=$(find . -name "*Test*.csproj" -o -name "*.Tests.csproj" -o -name "*.Test.csproj" | tr '\n' ' ')
+        INTEGRATION_TEST_PROJECTS=$(find . -name "*IntegrationTest*.csproj" -o -name "*.IntegrationTests.csproj" | tr '\n' ' ')
+        
+        echo "solution_path=${SOLUTION_PATH}" >> "$GITHUB_OUTPUT"
+        echo "project_path=${PROJECT_PATH}" >> "$GITHUB_OUTPUT"
+        echo "test_projects=${TEST_PROJECTS}" >> "$GITHUB_OUTPUT"
+        echo "integration_test_projects=${INTEGRATION_TEST_PROJECTS}" >> "$GITHUB_OUTPUT"
+
+    - name: Generate build version
+      id: version
+      shell: bash
+      run: |
+        COMMIT_HASH=$(git rev-parse --short HEAD)
+        COMMIT_COUNT=$(git rev-list --count HEAD)
+        BRANCH_NAME=$(echo "${GITHUB_REF_NAME}" | sed 's/[^a-zA-Z0-9]/-/g')
+        
+        if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+          VERSION="${GITHUB_REF#refs/tags/}"
+        else
+          VERSION="1.0.${COMMIT_COUNT}-${BRANCH_NAME}.${COMMIT_HASH}"
+        fi
+        
+        echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ inputs.dotnet_version }}
+        dotnet-quality: 'ga'

@@ -1,0 +1,52 @@
+name: 'Detect Release'
+description: 'Detect if current commit is a release merge and extract version'
+
+inputs:
+  tag_prefix:
+    description: 'Tag prefix'
+    required: false
+    default: 'v'
+
+outputs:
+  is_release:
+    description: 'Whether this is a release merge'
+    value: ${{ steps.detect-release.outputs.is_release }}
+  version:
+    description: 'Detected version'
+    value: ${{ steps.detect-release.outputs.version }}
+  release_branch:
+    description: 'Release branch name'
+    value: ${{ steps.detect-release.outputs.release_branch }}
+  next_tag:
+    description: 'Next tag to create'
+    value: ${{ steps.detect-release.outputs.next_tag }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Git
+      shell: bash
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+    - name: Detect merged release branch
+      id: detect-release
+      shell: bash
+      run: |
+        COMMIT_MSG=$(git log -1 --pretty=%B)
+        
+        if echo "$COMMIT_MSG" | grep -q "Merge pull request.*release/"; then
+          VERSION=$(echo "$COMMIT_MSG" | grep -oP 'release/\K[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+          
+          if [ -n "$VERSION" ]; then
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "release_branch=release/$VERSION" >> "$GITHUB_OUTPUT"
+            echo "next_tag=${{ inputs.tag_prefix }}$VERSION" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+          fi
+        else
+          echo "is_release=false" >> "$GITHUB_OUTPUT"
+        fi

@@ -1,0 +1,112 @@
+name: '.NET Process Coverage'
+description: 'Process code coverage reports and validate thresholds'
+
+inputs:
+  min_coverage:
+    description: 'Minimum coverage percentage'
+    required: false
+    default: '80'
+  upload_coverage:
+    description: 'Upload coverage reports'
+    required: false
+    default: 'true'
+
+outputs:
+  coverage:
+    description: 'Code coverage percentage'
+    value: ${{ steps.coverage.outputs.coverage }}
+  coverage_color:
+    description: 'Coverage badge color'
+    value: ${{ steps.coverage.outputs.coverage_color }}
+  coverage_outcome:
+    description: 'Coverage processing outcome'
+    value: ${{ steps.coverage.outcome }}
+
+runs:
+  using: composite
+  steps:
+    - name: Process coverage reports
+      id: coverage
+      shell: bash
+      run: |
+        set -euo pipefail
+        
+        COVERAGE_FILES=$(find TestResults -name "coverage.cobertura.xml" -type f)
+        
+        if [ -z "$COVERAGE_FILES" ]; then
+          echo "coverage=0" >> "$GITHUB_OUTPUT"
+          exit 1
+        fi
+        
+        TOTAL_LINES=0
+        COVERED_LINES=0
+        
+        for file in $COVERAGE_FILES; do
+          if command -v xmllint &> /dev/null; then
+            LINES_COVERED=$(xmllint --xpath "string(/coverage/@lines-covered)" "$file" 2>/dev/null || echo "0")
+            LINES_VALID=$(xmllint --xpath "string(/coverage/@lines-valid)" "$file" 2>/dev/null || echo "0")
+          else
+            LINES_COVERED=$(grep -oP 'lines-covered="\K[^"]*' "$file" | head -1 || echo "0")
+            LINES_VALID=$(grep -oP 'lines-valid="\K[^"]*' "$file" | head -1 || echo "0")
+          fi
+          
+          TOTAL_LINES=$((TOTAL_LINES + ${LINES_VALID:-0}))
+          COVERED_LINES=$((COVERED_LINES + ${LINES_COVERED:-0}))
+        done
+        
+        if [ "$TOTAL_LINES" -gt 0 ]; then
+          COVERAGE=$(python3 -c "print(round(($COVERED_LINES / $TOTAL_LINES) * 100, 2))")
+        else
+          COVERAGE="0"
+        fi
+        
+        echo "coverage=$COVERAGE" >> "$GITHUB_OUTPUT"
+        
+        python3 -c "
+        import sys
+        current = float('$COVERAGE')
+        minimum = float('${{ inputs.min_coverage }}')
+        
+        if current < minimum:
+            print(f'❌ Coverage {current}% is below minimum {minimum}%')
+            sys.exit(1)
+        else:
+            print(f'✅ Coverage {current}% meets minimum {minimum}%')
+        "
+        
+        if (( $(echo "$COVERAGE >= 90" | bc -l) )); then
+          echo "coverage_color=brightgreen" >> $GITHUB_OUTPUT
+        elif (( $(echo "$COVERAGE >= 80" | bc -l) )); then
+          echo "coverage_color=green" >> $GITHUB_OUTPUT
+        elif (( $(echo "$COVERAGE >= 70" | bc -l) )); then
+          echo "coverage_color=yellowgreen" >> $GITHUB_OUTPUT
+        elif (( $(echo "$COVERAGE >= 60" | bc -l) )); then
+          echo "coverage_color=yellow" >> $GITHUB_OUTPUT
+        elif (( $(echo "$COVERAGE >= 50" | bc -l) )); then
+          echo "coverage_color=orange" >> $GITHUB_OUTPUT
+        else
+          echo "coverage_color=red" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Upload coverage reports
+      if: inputs.upload_coverage == 'true' && steps.coverage.outcome == 'success'
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-reports-${{ github.run_id }}
+        path: |
+          TestResults/**/coverage.cobertura.xml
+          TestResults/**/coverage.json
+          TestResults/**/coverage.info
+        retention-days: 30
+        if-no-files-found: warn
+
+    - name: Upload coverage to Codecov
+      if: inputs.upload_coverage == 'true' && steps.coverage.outcome == 'success'
+      uses: codecov/codecov-action@v4
+      continue-on-error: true
+      with:
+        files: ./TestResults/**/coverage.cobertura.xml
+        flags: unittests
+        name: ${{ github.repository }}-${{ github.run_id }}
+        fail_ci_if_error: false
+        verbose: true

@@ -1,0 +1,75 @@
+name: 'Generate PR Summary'
+description: 'Generate commit summary and PR body content'
+
+inputs:
+  source_branch:
+    description: 'Source branch'
+    required: true
+  target_branch:
+    description: 'Target branch'
+    required: true
+
+outputs:
+  commit_summary:
+    description: 'Formatted commit summary'
+    value: ${{ steps.commits.outputs.summary }}
+  commit_count:
+    description: 'Number of commits'
+    value: ${{ steps.commits.outputs.count }}
+  files_changed:
+    description: 'Number of files changed'
+    value: ${{ steps.commits.outputs.files_changed }}
+  pr_body:
+    description: 'Generated PR body'
+    value: ${{ steps.generate-body.outputs.pr_body }}
+
+runs:
+  using: composite
+  steps:
+    - name: Generate commit summary
+      id: commits
+      shell: bash
+      run: |
+        COMMITS=$(git log --oneline origin/${{ inputs.target_branch }}..origin/${{ inputs.source_branch }} --pretty=format:"- %s (%h)" | head -10)
+        COMMIT_COUNT=$(git rev-list --count origin/${{ inputs.target_branch }}..origin/${{ inputs.source_branch }})
+        FILES_CHANGED=$(git diff --name-only origin/${{ inputs.target_branch }}..origin/${{ inputs.source_branch }} | wc -l)
+        
+        if [ "$COMMIT_COUNT" -gt 10 ]; then
+          COMMITS="$COMMITS"$'\n'"- ... and $(($COMMIT_COUNT - 10)) more commits"
+        fi
+        
+        {
+          echo "summary<<EOF"
+          echo "$COMMITS"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+        
+        echo "count=$COMMIT_COUNT" >> "$GITHUB_OUTPUT"
+        echo "files_changed=$FILES_CHANGED" >> "$GITHUB_OUTPUT"
+
+    - name: Generate PR body
+      id: generate-body
+      shell: bash
+      run: |
+        {
+          echo "pr_body<<EOF"
+          echo "## 🔄 Auto-generated Pull Request"
+          echo ""
+          echo "This PR was automatically created from \`${{ inputs.source_branch }}\` to \`${{ inputs.target_branch }}\`."
+          echo ""
+          echo "### 📊 Changes Summary"
+          echo "- **Commits:** ${{ steps.commits.outputs.count }}"
+          echo "- **Files changed:** ${{ steps.commits.outputs.files_changed }}"
+          echo ""
+          echo "### 📝 Recent Commits"
+          echo "${{ steps.commits.outputs.summary }}"
+          echo ""
+          echo "### 🎯 Next Steps"
+          echo "1. Review the changes"
+          echo "2. Approve if everything looks good"
+          echo "3. Merge when ready"
+          echo ""
+          echo "---"
+          echo "**Auto-generated** • $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"

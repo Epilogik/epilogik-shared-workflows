@@ -1,0 +1,243 @@
+name: Auto Create PR
+
+on:
+  workflow_call:
+    inputs:
+      source_branch:
+        description: 'Source branch for the PR'
+        required: true
+        type: string
+      target_branch:
+        description: 'Target branch for the PR'
+        required: false
+        type: string
+        default: 'develop'
+      pr_title_prefix:
+        description: 'PR title prefix'
+        required: false
+        type: string
+        default: '🔄 Auto'
+      auto_merge:
+        description: 'Enable auto-merge'
+        required: false
+        type: boolean
+        default: false
+      require_status_checks:
+        description: 'Require status checks to pass'
+        required: false
+        type: boolean
+        default: true
+      delete_branch_after_merge:
+        description: 'Delete source branch after merge'
+        required: false
+        type: boolean
+        default: false
+      reviewers:
+        description: 'Comma-separated list of reviewers'
+        required: false
+        type: string
+        default: ''
+      team_reviewers:
+        description: 'Comma-separated list of team reviewers'
+        required: false
+        type: string
+        default: ''
+      labels:
+        description: 'Comma-separated list of labels'
+        required: false
+        type: string
+        default: 'auto-generated'
+    outputs:
+      pr_number:
+        description: 'Created PR number'
+        value: ${{ jobs.create-pr.outputs.pr_number }}
+      pr_url:
+        description: 'Created PR URL'
+        value: ${{ jobs.create-pr.outputs.pr_url }}
+      pr_created:
+        description: 'Whether a PR was created'
+        value: ${{ jobs.create-pr.outputs.pr_created }}
+
+jobs:
+  create-pr:
+    name: 🔄 Create Auto PR
+    runs-on: ubuntu-latest
+    outputs:
+      pr_number: ${{ steps.create-pr.outputs.pr_number }}
+      pr_url: ${{ steps.create-pr.outputs.pr_url }}
+      pr_created: ${{ steps.create-pr.outputs.pr_created }}
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🔍 Check if branches are different
+        id: check-diff
+        run: |
+          git fetch origin ${{ inputs.target_branch }}
+          git fetch origin ${{ inputs.source_branch }}
+          
+          # Check if source branch is ahead of target
+          AHEAD=$(git rev-list --count origin/${{ inputs.target_branch }}..origin/${{ inputs.source_branch }})
+          BEHIND=$(git rev-list --count origin/${{ inputs.source_branch }}..origin/${{ inputs.target_branch }})
+          
+          echo "ahead=$AHEAD" >> $GITHUB_OUTPUT
+          echo "behind=$BEHIND" >> $GITHUB_OUTPUT
+          
+          if [ "$AHEAD" -gt 0 ]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "✅ Source branch has $AHEAD commits ahead of target"
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ No changes to create PR for"
+          fi
+
+      - name: 🔍 Check existing PR
+        if: steps.check-diff.outputs.has_changes == 'true'
+        id: check-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Check if PR already exists
+          PR_COUNT=$(gh pr list --head ${{ inputs.source_branch }} --base ${{ inputs.target_branch }} --state open --json number --jq length)
+          
+          if [ "$PR_COUNT" -gt 0 ]; then
+            PR_NUMBER=$(gh pr list --head ${{ inputs.source_branch }} --base ${{ inputs.target_branch }} --state open --json number --jq '.[0].number')
+            PR_URL=$(gh pr list --head ${{ inputs.source_branch }} --base ${{ inputs.target_branch }} --state open --json url --jq '.[0].url')
+            echo "pr_exists=true" >> $GITHUB_OUTPUT
+            echo "existing_pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+            echo "existing_pr_url=$PR_URL" >> $GITHUB_OUTPUT
+            echo "ℹ️ PR already exists: #$PR_NUMBER"
+          else
+            echo "pr_exists=false" >> $GITHUB_OUTPUT
+            echo "✅ No existing PR found"
+          fi
+
+      - name: 📝 Generate commit summary
+        if: steps.check-diff.outputs.has_changes == 'true'
+        id: commits
+        run: |
+          # Get commits between branches
+          COMMITS=$(git log --oneline origin/${{ inputs.target_branch }}..origin/${{ inputs.source_branch }} --pretty=format:"- %s (%h)" | head -10)
+          COMMIT_COUNT=$(git rev-list --count origin/${{ inputs.target_branch }}..origin/${{ inputs.source_branch }})
+          
+          if [ "$COMMIT_COUNT" -gt 10 ]; then
+            COMMITS="$COMMITS"$'\n'"- ... and $(($COMMIT_COUNT - 10)) more commits"
+          fi
+          
+          # Prepare multiline output
+          {
+            echo "summary<<EOF"
+            echo "$COMMITS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          
+          echo "count=$COMMIT_COUNT" >> "$GITHUB_OUTPUT"
+
+      - name: 🆕 Create PR
+        if: steps.check-diff.outputs.has_changes == 'true' && steps.check-pr.outputs.pr_exists == 'false'
+        id: create-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Build PR body
+          PR_BODY="## 🔄 Auto-generated Pull Request
+
+          This PR was automatically created from \`${{ inputs.source_branch }}\` to \`${{ inputs.target_branch }}\`.
+
+          ### 📊 Changes Summary
+          - **Commits:** ${{ steps.commits.outputs.count }}
+          - **Files changed:** $(git diff --name-only origin/${{ inputs.target_branch }}..origin/${{ inputs.source_branch }} | wc -l)
+
+          ### 📝 Recent Commits
+          ${{ steps.commits.outputs.summary }}
+
+          ### 🎯 Next Steps
+          1. Review the changes
+          2. Approve if everything looks good
+          3. Merge when ready
+
+          ---
+          **Auto-generated** • $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+
+          # Create PR
+          PR_URL=$(gh pr create \
+            --title "${{ inputs.pr_title_prefix }}: Merge ${{ inputs.source_branch }} → ${{ inputs.target_branch }}" \
+            --body "$PR_BODY" \
+            --base ${{ inputs.target_branch }} \
+            --head ${{ inputs.source_branch }} \
+            $([ -n "${{ inputs.labels }}" ] && echo "--label ${{ inputs.labels }}" || echo "") \
+            $([ -n "${{ inputs.reviewers }}" ] && echo "--reviewer ${{ inputs.reviewers }}" || echo "") \
+            $([ -n "${{ inputs.team_reviewers }}" ] && echo "--team-reviewer ${{ inputs.team_reviewers }}" || echo ""))
+
+          PR_NUMBER=$(echo "$PR_URL" | grep -oP '\d+$')
+          
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
+          echo "pr_created=true" >> $GITHUB_OUTPUT
+          
+          echo "✅ Created PR #$PR_NUMBER: $PR_URL"
+
+          # Enable auto-merge if requested
+          if [ "${{ inputs.auto_merge }}" == "true" ]; then
+            if [ "${{ inputs.require_status_checks }}" == "true" ]; then
+              gh pr merge $PR_NUMBER --auto --squash
+              echo "✅ Auto-merge enabled (will merge when checks pass)"
+            else
+              gh pr merge $PR_NUMBER --squash
+              echo "✅ PR merged immediately"
+            fi
+          fi
+
+      - name: 🔄 Update existing PR
+        if: steps.check-diff.outputs.has_changes == 'true' && steps.check-pr.outputs.pr_exists == 'true'
+        id: update-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ steps.check-pr.outputs.existing_pr_number }}"
+          PR_URL="${{ steps.check-pr.outputs.existing_pr_url }}"
+          
+          # Add comment with new changes
+          COMMENT="🔄 **Updated** • $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+
+          ### New Changes
+          ${{ steps.commits.outputs.summary }}
+
+          **Total commits ahead:** ${{ steps.commits.outputs.count }}"
+
+          gh pr comment "$PR_NUMBER" --body "$COMMENT"
+          
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+          echo "pr_created=false" >> "$GITHUB_OUTPUT"
+          
+          echo "✅ Updated existing PR #$PR_NUMBER"
+
+      - name: ℹ️ No action needed
+        if: steps.check-diff.outputs.has_changes == 'false'
+        id: no-action
+        run: |
+          echo "pr_created=false" >> $GITHUB_OUTPUT
+          echo "ℹ️ Branches are in sync - no PR needed"
+
+      - name: 📋 Summary
+        run: |
+          echo "## 🔄 Auto PR Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Source Branch | \`${{ inputs.source_branch }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Target Branch | \`${{ inputs.target_branch }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commits Ahead | ${{ steps.check-diff.outputs.ahead || '0' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Changes Detected | ${{ steps.check-diff.outputs.has_changes || 'false' }} |" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ steps.check-diff.outputs.has_changes }}" == "true" ]; then
+            if [ "${{ steps.create-pr.outputs.pr_created || steps.update-pr.outputs.pr_created }}" == "true" ]; then
+              echo "| PR Created | ✅ #${{ steps.create-pr.outputs.pr_number || steps.update-pr.outputs.pr_number }} |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| PR Updated | ✅ #${{ steps.update-pr.outputs.pr_number }} |" >> $GITHUB_STEP_SUMMARY
+            fi
+            echo "| Auto-merge | ${{ inputs.auto_merge }} |" >> $GITHUB_STEP_SUMMARY
+          fi

@@ -1,0 +1,43 @@
+name: 'PR Branch Check'
+description: 'Check branch differences and detect changes'
+
+inputs:
+  source_branch:
+    description: 'Source branch'
+    required: true
+  target_branch:
+    description: 'Target branch'
+    required: true
+
+outputs:
+  has_changes:
+    description: 'Whether there are changes to create PR for'
+    value: ${{ steps.check-diff.outputs.has_changes }}
+  ahead:
+    description: 'Number of commits ahead'
+    value: ${{ steps.check-diff.outputs.ahead }}
+  behind:
+    description: 'Number of commits behind'
+    value: ${{ steps.check-diff.outputs.behind }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check if branches are different
+      id: check-diff
+      shell: bash
+      run: |
+        git fetch origin ${{ inputs.target_branch }}
+        git fetch origin ${{ inputs.source_branch }}
+        
+        AHEAD=$(git rev-list --count origin/${{ inputs.target_branch }}..origin/${{ inputs.source_branch }})
+        BEHIND=$(git rev-list --count origin/${{ inputs.source_branch }}..origin/${{ inputs.target_branch }})
+        
+        echo "ahead=$AHEAD" >> $GITHUB_OUTPUT
+        echo "behind=$BEHIND" >> $GITHUB_OUTPUT
+        
+        if [ "$AHEAD" -gt 0 ]; then
+          echo "has_changes=true" >> $GITHUB_OUTPUT
+        else
+          echo "has_changes=false" >> $GITHUB_OUTPUT
+        fi

@@ -1,0 +1,45 @@
+name: 'PR Existence Check'
+description: 'Check if PR already exists between branches'
+
+inputs:
+  source_branch:
+    description: 'Source branch'
+    required: true
+  target_branch:
+    description: 'Target branch'
+    required: true
+  github_token:
+    description: 'GitHub token'
+    required: true
+
+outputs:
+  pr_exists:
+    description: 'Whether PR already exists'
+    value: ${{ steps.check-pr.outputs.pr_exists }}
+  existing_pr_number:
+    description: 'Existing PR number'
+    value: ${{ steps.check-pr.outputs.existing_pr_number }}
+  existing_pr_url:
+    description: 'Existing PR URL'
+    value: ${{ steps.check-pr.outputs.existing_pr_url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check existing PR
+      id: check-pr
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+      run: |
+        PR_COUNT=$(gh pr list --head ${{ inputs.source_branch }} --base ${{ inputs.target_branch }} --state open --json number --jq length)
+        
+        if [ "$PR_COUNT" -gt 0 ]; then
+          PR_NUMBER=$(gh pr list --head ${{ inputs.source_branch }} --base ${{ inputs.target_branch }} --state open --json number --jq '.[0].number')
+          PR_URL=$(gh pr list --head ${{ inputs.source_branch }} --base ${{ inputs.target_branch }} --state open --json url --jq '.[0].url')
+          echo "pr_exists=true" >> $GITHUB_OUTPUT
+          echo "existing_pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "existing_pr_url=$PR_URL" >> $GITHUB_OUTPUT
+        else
+          echo "pr_exists=false" >> $GITHUB_OUTPUT
+        fi
