@@ -1,0 +1,40 @@
+name: Docker - Build & Push
+description: Build and optionally push Docker images
+inputs:
+  context:
+    required: true
+  file:
+    required: true
+  platforms:
+    required: true
+  push:
+    required: true
+  tags:
+    required: true
+  target:
+    required: false
+    default: ''
+  build_args:
+    required: false
+    default: ''
+  provenance:
+    required: false
+    default: 'true'
+  sbom:
+    required: false
+    default: 'true'
+runs:
+  using: composite
+  steps:
+    - name: Build
+      uses: docker/build-push-action@v5
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.file }}
+        platforms: ${{ inputs.platforms }}
+        push: ${{ inputs.push }}
+        tags: ${{ inputs.tags }}
+        target: ${{ inputs.target }}
+        build-args: ${{ inputs.build_args }}
+        provenance: ${{ inputs.provenance }}
+        sbom: ${{ inputs.sbom }}

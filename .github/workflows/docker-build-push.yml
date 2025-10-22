@@ -114,26 +114,11 @@ jobs:
           fetch-depth: 0 # Required for GitVersion and proper context
 
       - name: ✅ Validate inputs
-        run: |
-          echo "🔍 Validating Docker build inputs..."
-          
-          # Validate Dockerfile exists
-          if [ ! -f "${{ inputs.dockerfile_path }}" ]; then
-            echo "❌ Error: Dockerfile not found at ${{ inputs.dockerfile_path }}"
-            exit 1
-          fi
-          
-          # Validate build context exists
-          if [ ! -d "${{ inputs.build_context }}" ]; then
-            echo "❌ Error: Build context directory not found at ${{ inputs.build_context }}"
-            exit 1
-          fi
-          
-          echo "✅ All inputs validated successfully"
-          echo "🐳 Image: ${{ inputs.registry }}/${{ inputs.image_name }}"
-          echo "📁 Context: ${{ inputs.build_context }}"
-          echo "📄 Dockerfile: ${{ inputs.dockerfile_path }}"
-          echo "🏗️ Platforms: ${{ inputs.platforms }}"
+        uses: ./../../.github/actions/docker-validate
+        with:
+          dockerfile_path: ${{ inputs.dockerfile_path }}
+          build_context: ${{ inputs.build_context }}
+          platforms: ${{ inputs.platforms }}
 
       - name: 🏷️ Extract metadata
         id: meta
@@ -161,23 +146,11 @@ jobs:
             org.opencontainers.image.description=Epilogik containerized application
             org.opencontainers.image.vendor=Epilogik
 
-      - name: 🔧 Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          version: latest
-          driver-opts: |
-            network=host
-          buildkitd-flags: |
-            --allow-insecure-entitlement network.host
-            --allow-insecure-entitlement security.insecure
-
-      - name: 🔐 Log in to Container Registry
-        if: inputs.push
-        uses: docker/login-action@v3
+      - name: 🔧 Setup Docker
+        uses: ./../../.github/actions/docker-setup
         with:
           registry: ${{ inputs.registry }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.registry_token }}
+          push: ${{ inputs.push }}
 
       - name: 💾 Configure build cache
         if: inputs.cache_enabled
@@ -186,114 +159,39 @@ jobs:
           echo "Cache will be stored in GitHub Actions cache"
           echo "Cache scope: ${{ inputs.registry }}/${{ inputs.image_name }}"
 
-      - name: � Parse build arguments
-        id: build-args
-        run: |
-          echo "🔨 Processing build arguments..."
-          
-          # Create build args file if provided
-          if [ -n "${{ inputs.build_args }}" ]; then
-            echo "${{ inputs.build_args }}" > build-args.txt
-            echo "build_args_file=build-args.txt" >> "$GITHUB_OUTPUT"
-            
-            echo "📋 Build arguments:"
-            cat build-args.txt
-          else
-            echo "build_args_file=" >> "$GITHUB_OUTPUT"
-            echo "ℹ️ No build arguments provided"
-          fi
+      - name: 🔨 Parse build arguments
+        uses: ./../../.github/actions/docker-parse-args
+        with:
+          build_args: ${{ inputs.build_args }}
 
-      - name: �🐳 Build and push Docker image
+      - name: � Build & Push
         id: build
-        uses: docker/build-push-action@v5
+        uses: ./../../.github/actions/docker-build-push
         with:
           context: ${{ inputs.build_context }}
           file: ${{ inputs.dockerfile_path }}
           platforms: ${{ inputs.platforms }}
           push: ${{ inputs.push }}
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          annotations: ${{ steps.meta.outputs.annotations }}
           target: ${{ inputs.target }}
-          build-args: ${{ inputs.build_args }}
-          cache-from: ${{ inputs.cache_enabled && 'type=gha' || '' }}
-          cache-to: ${{ inputs.cache_enabled && 'type=gha,mode=max' || '' }}
+          build_args: ${{ inputs.build_args }}
           provenance: ${{ inputs.provenance }}
           sbom: ${{ inputs.sbom }}
-          outputs: type=image,name=${{ inputs.registry }}/${{ inputs.image_name }},push=${{ inputs.push }}
 
-      - name: 🔍 Inspect built image
+      - name: 🔍 Inspect image
         if: inputs.push
         id: inspect
-        run: |
-          echo "🔍 Inspecting built image..."
-          
-          IMAGE_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
-          echo "📋 Inspecting: $IMAGE_TAG"
-          
-          # Get image information
-          docker buildx imagetools inspect "$IMAGE_TAG" --format '{{json .}}' > image-info.json
-          
-          # Extract size information
-          SIZE_BYTES=$(cat image-info.json | jq -r '.manifest.config.size // 0')
-          SIZE_MB=$(echo "scale=2; $SIZE_BYTES / 1024 / 1024" | bc)
-          
-          echo "size=$SIZE_MB" >> "$GITHUB_OUTPUT"
-          echo "📏 Image size: ${SIZE_MB} MB"
-          
-          # Extract architecture information
-          ARCHITECTURES=$(cat image-info.json | jq -r '.manifest.mediaType // "unknown"')
-          echo "architectures=$ARCHITECTURES" >> "$GITHUB_OUTPUT"
-          
-          echo "🏗️ Image architectures: $ARCHITECTURES"
+        uses: ./../../.github/actions/docker-inspect
+        with:
+          image_tag: ${{ steps.meta.outputs.tags }}
 
-      - name: 🛡️ Security scan with Trivy
+      - name: 🛡️ Security scan
         if: inputs.security_scan && inputs.push
         id: scan
-        uses: aquasecurity/trivy-action@master
+        uses: ./../../.github/actions/docker-scan
         with:
-          image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH,MEDIUM'
-          exit-code: '0' # Don't fail the build on vulnerabilities
-
-      - name: � Process scan results
-        if: inputs.security_scan && inputs.push && steps.scan.outcome == 'success'
-        id: scan-summary
-        run: |
-          echo "📊 Processing security scan results..."
-          
-          if [ -f "trivy-results.sarif" ]; then
-            # Count vulnerabilities by severity
-            CRITICAL=$(jq '[.runs[].results[].ruleId] | map(select(test("CRITICAL"))) | length' trivy-results.sarif 2>/dev/null || echo "0")
-            HIGH=$(jq '[.runs[].results[].ruleId] | map(select(test("HIGH"))) | length' trivy-results.sarif 2>/dev/null || echo "0")
-            MEDIUM=$(jq '[.runs[].results[].ruleId] | map(select(test("MEDIUM"))) | length' trivy-results.sarif 2>/dev/null || echo "0")
-            
-            SUMMARY="Critical: $CRITICAL, High: $HIGH, Medium: $MEDIUM"
-            echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
-            
-            echo "🛡️ Security scan summary: $SUMMARY"
-            
-            # Determine scan status
-            if [ "$CRITICAL" -gt 0 ]; then
-              echo "scan_status=critical" >> $GITHUB_OUTPUT
-              echo "⚠️ Critical vulnerabilities found!"
-            elif [ "$HIGH" -gt 0 ]; then
-              echo "scan_status=high" >> $GITHUB_OUTPUT
-              echo "⚠️ High severity vulnerabilities found"
-            elif [ "$MEDIUM" -gt 0 ]; then
-              echo "scan_status=medium" >> $GITHUB_OUTPUT
-              echo "ℹ️ Medium severity vulnerabilities found"
-            else
-              echo "scan_status=clean" >> $GITHUB_OUTPUT
-              echo "✅ No significant vulnerabilities found"
-            fi
-          else
-            echo "summary=Scan failed" >> $GITHUB_OUTPUT
-            echo "scan_status=error" >> $GITHUB_OUTPUT
-            echo "❌ Security scan file not found"
-          fi
+          image_tag: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+          enabled: ${{ inputs.security_scan }}
 
       - name: 📤 Upload scan results to GitHub Security
         if: inputs.security_scan && inputs.push && steps.scan.outcome == 'success'
@@ -303,7 +201,7 @@ jobs:
           sarif_file: 'trivy-results.sarif'
           category: 'docker-image-scan'
 
-      - name: � Upload scan results as artifact
+      - name: Upload scan results
         if: inputs.security_scan && inputs.push
         uses: actions/upload-artifact@v4
         with:
