@@ -118,27 +118,27 @@ jobs:
     
     steps:
       - name: Validate inputs
-        uses: ./../../.github/actions/deploy-validate
+        uses: ./../../.github/actions/single-container/validate
         with:
           environment: ${{ inputs.environment }}
           deploy_strategy: ${{ inputs.deploy_strategy }}
           docker_image: ${{ inputs.docker_image }}
 
       - name: Setup SSH
-        uses: ./../../.github/actions/deploy-ssh-setup
+        uses: ./../../.github/actions/single-container/ssh-setup
         with:
           ssh_port: ${{ secrets.ssh_port || '22' }}
 
       - name: Pre-deployment checks
         id: pre-checks
-        uses: ./../../.github/actions/deploy-prechecks
+        uses: ./../../.github/actions/single-container/prechecks
         with:
           container_name: ${{ inputs.container_name }}
           host_port: ${{ inputs.host_port }}
 
       - name: Deploy container
         id: deployment
-        uses: ./../../.github/actions/deploy-remote-run
+        uses: ./../../.github/actions/single-container/remote-run
         with:
           container_name: ${{ inputs.container_name }}
           docker_image: ${{ inputs.docker_image }}
@@ -152,6 +152,6 @@ jobs:
 
       - name: Post-deployment verification
         if: steps.deployment.outputs.status == 'success'
-        uses: ./../../.github/actions/deploy-postverify
+        uses: ./../../.github/actions/single-container/postverify
         with:
           container_name: ${{ inputs.container_name }}

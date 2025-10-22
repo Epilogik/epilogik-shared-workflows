@@ -114,7 +114,7 @@ jobs:
           fetch-depth: 0 # Required for GitVersion and proper context
 
       - name: ✅ Validate inputs
-        uses: ./../../.github/actions/docker-validate
+        uses: ./../../.github/actions/docker-build/validate
         with:
           dockerfile_path: ${{ inputs.dockerfile_path }}
           build_context: ${{ inputs.build_context }}
@@ -147,7 +147,7 @@ jobs:
             org.opencontainers.image.vendor=Epilogik
 
       - name: 🔧 Setup Docker
-        uses: ./../../.github/actions/docker-setup
+        uses: ./../../.github/actions/docker-build/setup
         with:
           registry: ${{ inputs.registry }}
           push: ${{ inputs.push }}
@@ -160,13 +160,13 @@ jobs:
           echo "Cache scope: ${{ inputs.registry }}/${{ inputs.image_name }}"
 
       - name: 🔨 Parse build arguments
-        uses: ./../../.github/actions/docker-parse-args
+        uses: ./../../.github/actions/docker-build/parse-args
         with:
           build_args: ${{ inputs.build_args }}
 
-      - name: � Build & Push
+      - name: 🐳 Build & Push
         id: build
-        uses: ./../../.github/actions/docker-build-push
+        uses: ./../../.github/actions/docker-build/build-push
         with:
           context: ${{ inputs.build_context }}
           file: ${{ inputs.dockerfile_path }}
@@ -181,14 +181,14 @@ jobs:
       - name: 🔍 Inspect image
         if: inputs.push
         id: inspect
-        uses: ./../../.github/actions/docker-inspect
+        uses: ./../../.github/actions/docker-build/inspect
         with:
           image_tag: ${{ steps.meta.outputs.tags }}
 
       - name: 🛡️ Security scan
         if: inputs.security_scan && inputs.push
         id: scan
-        uses: ./../../.github/actions/docker-scan
+        uses: ./../../.github/actions/docker-build/scan
         with:
           image_tag: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
           enabled: ${{ inputs.security_scan }}
