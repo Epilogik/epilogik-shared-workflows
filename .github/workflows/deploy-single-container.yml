@@ -1,0 +1,157 @@
+name: Deploy Single Container
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        type: string
+      docker_image:
+        description: 'Docker image to deploy'
+        required: true
+        type: string
+      container_name:
+        description: 'Container name'
+        required: true
+        type: string
+      container_port:
+        description: 'Internal container port'
+        required: true
+        type: string
+      host_port:
+        description: 'Host port to map to'
+        required: true
+        type: string
+      docker_network:
+        description: 'Docker network name'
+        required: false
+        type: string
+        default: 'epilogik-net'
+      wait_for_health:
+        description: 'Wait for container to be healthy'
+        required: false
+        type: boolean
+        default: true
+      cleanup_images:
+        description: 'Cleanup old Docker images after deployment'
+        required: false
+        type: boolean
+        default: true
+      health_check_url:
+        description: 'URL to check for application health'
+        required: false
+        type: string
+        default: ''
+      health_check_timeout:
+        description: 'Health check timeout in seconds'
+        required: false
+        type: number
+        default: 300
+      env_vars:
+        description: 'Environment variables for container (JSON format)'
+        required: false
+        type: string
+        default: '{}'
+      volumes:
+        description: 'Volume mounts for container (JSON array format)'
+        required: false
+        type: string
+        default: '[]'
+      restart_policy:
+        description: 'Container restart policy'
+        required: false
+        type: string
+        default: 'unless-stopped'
+      deploy_strategy:
+        description: 'Deployment strategy (rolling/blue-green/recreate)'
+        required: false
+        type: string
+        default: 'rolling'
+      rollback_on_failure:
+        description: 'Rollback to previous version on deployment failure'
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      ssh_host:
+        description: 'SSH hostname or IP address'
+        required: true
+      ssh_user:
+        description: 'SSH username'
+        required: true
+      ssh_key:
+        description: 'SSH private key'
+        required: true
+      ssh_port:
+        description: 'SSH port number'
+        required: false
+    outputs:
+      deployment_status:
+        description: 'Deployment status (success/failed/rolled-back)'
+        value: ${{ jobs.deploy.outputs.status }}
+      container_id:
+        description: 'Deployed container ID'
+        value: ${{ jobs.deploy.outputs.container_id }}
+      previous_image:
+        description: 'Previous container image (for rollback)'
+        value: ${{ jobs.deploy.outputs.previous_image }}
+      deployment_time:
+        description: 'Deployment duration in seconds'
+        value: ${{ jobs.deploy.outputs.deployment_time }}
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  deploy:
+    name: Deploy Container
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+    outputs:
+      status: ${{ steps.deployment.outputs.status }}
+      container_id: ${{ steps.deployment.outputs.container_id }}
+      previous_image: ${{ steps.deployment.outputs.previous_image }}
+      deployment_time: ${{ steps.deployment.outputs.deployment_time }}
+    
+    steps:
+      - name: Validate inputs
+        uses: ./../../.github/actions/deploy-validate
+        with:
+          environment: ${{ inputs.environment }}
+          deploy_strategy: ${{ inputs.deploy_strategy }}
+          docker_image: ${{ inputs.docker_image }}
+
+      - name: Setup SSH
+        uses: ./../../.github/actions/deploy-ssh-setup
+        with:
+          ssh_port: ${{ secrets.ssh_port || '22' }}
+
+      - name: Pre-deployment checks
+        id: pre-checks
+        uses: ./../../.github/actions/deploy-prechecks
+        with:
+          container_name: ${{ inputs.container_name }}
+          host_port: ${{ inputs.host_port }}
+
+      - name: Deploy container
+        id: deployment
+        uses: ./../../.github/actions/deploy-remote-run
+        with:
+          container_name: ${{ inputs.container_name }}
+          docker_image: ${{ inputs.docker_image }}
+          docker_network: ${{ inputs.docker_network }}
+          host_port: ${{ inputs.host_port }}
+          container_port: ${{ inputs.container_port }}
+          deploy_strategy: ${{ inputs.deploy_strategy }}
+          restart_policy: ${{ inputs.restart_policy }}
+          env_vars: ${{ inputs.env_vars }}
+          volumes: ${{ inputs.volumes }}
+
+      - name: Post-deployment verification
+        if: steps.deployment.outputs.status == 'success'
+        uses: ./../../.github/actions/deploy-postverify
+        with:
+          container_name: ${{ inputs.container_name }}

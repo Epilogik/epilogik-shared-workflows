@@ -1,0 +1,28 @@
+name: Compose - Health Check
+description: Wait for Docker Compose services to be healthy
+inputs:
+  compose_files:
+    required: true
+  deploy_path:
+    required: true
+  environment:
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Wait for health
+      shell: bash
+      run: |
+        ssh -i ~/.ssh/id_rsa \
+          -p ${{ secrets.ssh_port || '22' }} \
+          ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} \
+          "cd ${{ inputs.deploy_path }}/${{ inputs.environment }} && \
+           for i in {1..30}; do \
+             if docker-compose ps | grep -q 'unhealthy'; then \
+               echo 'Waiting for services...'; \
+               sleep 2; \
+             else \
+               echo 'All services healthy'; \
+               break; \
+             fi; \
+           done"

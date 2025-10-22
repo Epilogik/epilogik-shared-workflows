@@ -1,0 +1,117 @@
+name: Deploy Multi-Service Stack
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        type: string
+      compose_files:
+        description: 'Docker compose files to deploy (comma separated)'
+        required: false
+        type: string
+        default: 'docker-compose.infra.yml,docker-compose.services.yml'
+      docker_network:
+        description: 'Docker network name'
+        required: false
+        type: string
+        default: 'epilogik-net'
+      wait_for_health:
+        description: 'Wait for services to be healthy'
+        required: false
+        type: boolean
+        default: true
+      cleanup_images:
+        description: 'Cleanup old Docker images'
+        required: false
+        type: boolean
+        default: true
+      source_path:
+        description: 'Source path for compose files'
+        required: false
+        type: string
+        default: ''
+      deploy_strategy:
+        description: 'Deployment strategy (rolling/recreate)'
+        required: false
+        type: string
+        default: 'rolling'
+    secrets:
+      deploy_path:
+        description: 'Deployment path on server'
+        required: true
+      ssh_host:
+        required: true
+      ssh_user:
+        required: true
+      ssh_port:
+        required: false
+      ssh_key:
+        required: true
+    outputs:
+      deployment_status:
+        description: 'Deployment status'
+        value: ${{ jobs.deploy.outputs.status }}
+      deployed_services:
+        description: 'Deployed services'
+        value: ${{ jobs.deploy.outputs.services }}
+      deployment_time:
+        description: 'Deployment duration in seconds'
+        value: ${{ jobs.deploy.outputs.deployment_time }}
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy Stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: ${{ inputs.environment }}
+    outputs:
+      status: ${{ steps.deploy.outputs.status }}
+      services: ${{ steps.deploy.outputs.services }}
+      deployment_time: ${{ steps.deploy.outputs.deployment_time }}
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate inputs
+        uses: ./../../.github/actions/compose-validate
+        with:
+          environment: ${{ inputs.environment }}
+          compose_files: ${{ inputs.compose_files }}
+          source_path: ${{ inputs.source_path }}
+
+      - name: Setup SSH
+        uses: ./../../.github/actions/deploy-ssh-setup
+        with:
+          ssh_port: ${{ secrets.ssh_port || '22' }}
+
+      - name: Deploy stack
+        id: deploy
+        uses: ./../../.github/actions/compose-deploy
+        with:
+          environment: ${{ inputs.environment }}
+          compose_files: ${{ inputs.compose_files }}
+          docker_network: ${{ inputs.docker_network }}
+          deploy_strategy: ${{ inputs.deploy_strategy }}
+          source_path: ${{ inputs.source_path }}
+          deploy_path: ${{ secrets.deploy_path }}
+
+      - name: Health check
+        if: inputs.wait_for_health
+        uses: ./../../.github/actions/compose-health-check
+        with:
+          compose_files: ${{ inputs.compose_files }}
+          deploy_path: ${{ secrets.deploy_path }}
+          environment: ${{ inputs.environment }}
+
+      - name: Cleanup
+        if: inputs.cleanup_images
+        uses: ./../../.github/actions/compose-cleanup
+        with:
+          deploy_path: ${{ secrets.deploy_path }}
+          environment: ${{ inputs.environment }}
