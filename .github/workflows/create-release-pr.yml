@@ -70,19 +70,19 @@ jobs:
           
           # Check if release branch exists
           if git ls-remote --heads origin "$RELEASE_BRANCH" | grep -q "$RELEASE_BRANCH"; then
-            echo "branch_exists=true" >> $GITHUB_OUTPUT
+            echo "branch_exists=true" >> "$GITHUB_OUTPUT"
           else
-            echo "branch_exists=false" >> $GITHUB_OUTPUT
+            echo "branch_exists=false" >> "$GITHUB_OUTPUT"
           fi
           
           # Check if PR exists
           PR_COUNT=$(gh pr list --head ${{ inputs.base_branch }} --base "$RELEASE_BRANCH" --state open --json number --jq length)
           if [ "$PR_COUNT" -gt 0 ]; then
             PR_NUMBER=$(gh pr list --head ${{ inputs.base_branch }} --base "$RELEASE_BRANCH" --state open --json number --jq '.[0].number')
-            echo "pr_exists=true" >> $GITHUB_OUTPUT
-            echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+            echo "pr_exists=true" >> "$GITHUB_OUTPUT"
+            echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           else
-            echo "pr_exists=false" >> $GITHUB_OUTPUT
+            echo "pr_exists=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create or update release branch

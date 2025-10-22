@@ -194,12 +194,12 @@ jobs:
           # Create build args file if provided
           if [ -n "${{ inputs.build_args }}" ]; then
             echo "${{ inputs.build_args }}" > build-args.txt
-            echo "build_args_file=build-args.txt" >> $GITHUB_OUTPUT
+            echo "build_args_file=build-args.txt" >> "$GITHUB_OUTPUT"
             
             echo "📋 Build arguments:"
             cat build-args.txt
           else
-            echo "build_args_file=" >> $GITHUB_OUTPUT
+            echo "build_args_file=" >> "$GITHUB_OUTPUT"
             echo "ℹ️ No build arguments provided"
           fi
 
@@ -238,12 +238,12 @@ jobs:
           SIZE_BYTES=$(cat image-info.json | jq -r '.manifest.config.size // 0')
           SIZE_MB=$(echo "scale=2; $SIZE_BYTES / 1024 / 1024" | bc)
           
-          echo "size=$SIZE_MB" >> $GITHUB_OUTPUT
+          echo "size=$SIZE_MB" >> "$GITHUB_OUTPUT"
           echo "📏 Image size: ${SIZE_MB} MB"
           
           # Extract architecture information
           ARCHITECTURES=$(cat image-info.json | jq -r '.manifest.mediaType // "unknown"')
-          echo "architectures=$ARCHITECTURES" >> $GITHUB_OUTPUT
+          echo "architectures=$ARCHITECTURES" >> "$GITHUB_OUTPUT"
           
           echo "🏗️ Image architectures: $ARCHITECTURES"
 
@@ -271,7 +271,7 @@ jobs:
             MEDIUM=$(jq '[.runs[].results[].ruleId] | map(select(test("MEDIUM"))) | length' trivy-results.sarif 2>/dev/null || echo "0")
             
             SUMMARY="Critical: $CRITICAL, High: $HIGH, Medium: $MEDIUM"
-            echo "summary=$SUMMARY" >> $GITHUB_OUTPUT
+            echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
             
             echo "🛡️ Security scan summary: $SUMMARY"
             

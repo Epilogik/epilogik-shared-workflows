@@ -41,22 +41,24 @@ runs:
       id: generate
       shell: bash
       run: |
+        set -euo pipefail
+
         # Determine from tag
         if [ -z "${{ inputs.from_tag }}" ]; then
-          FROM_TAG=$(git tag -l "v*.*.*" | sort -V | tail -n 1)
+          FROM_TAG=$(git tag -l "v*.*.*" | sort -V | tail -n 1 || true)
         else
           FROM_TAG="${{ inputs.from_tag }}"
         fi
-        
+
         TO_REF="${{ inputs.to_ref }}"
-        
+
         # Build git log command
         LOG_CMD="git log --pretty=format:'%s|%h|%an|%ai'"
-        
+
         if [ "${{ inputs.include_merge_commits }}" == "false" ]; then
           LOG_CMD="$LOG_CMD --no-merges"
         fi
-        
+
         if [ -n "$FROM_TAG" ]; then
           LOG_CMD="$LOG_CMD $FROM_TAG..$TO_REF"
           COMPARE_URL="https://github.com/${{ github.repository }}/compare/$FROM_TAG...$TO_REF"
@@ -64,15 +66,15 @@ runs:
           LOG_CMD="$LOG_CMD $TO_REF"
           COMPARE_URL=""
         fi
-        
+
         # Get commits
-        COMMITS=$(eval "$LOG_CMD")
-        COMMIT_COUNT=$(echo "$COMMITS" | wc -l)
-        
+        COMMITS=$(eval "$LOG_CMD" || true)
+        COMMIT_COUNT=$(echo "$COMMITS" | sed '/^$/d' | wc -l)
+
         # Generate notes based on format
         if [ "${{ inputs.format }}" == "markdown" ]; then
           NOTES=""
-          
+
           if [ "${{ inputs.group_by }}" == "type" ]; then
             # Group by conventional commit type
             FEATURES=$(echo "$COMMITS" | grep "^feat" || true)
@@ -80,34 +82,46 @@ runs:
             DOCS=$(echo "$COMMITS" | grep "^docs" || true)
             CHORES=$(echo "$COMMITS" | grep "^chore" || true)
             OTHERS=$(echo "$COMMITS" | grep -v "^feat\|^fix\|^docs\|^chore" || true)
-            
-            [ -n "$FEATURES" ] && NOTES="$NOTES### ✨ Features\n$(echo "$FEATURES" | while IFS='|' read -r msg hash author date; do echo "- $msg (\`$hash\`)"; done)\n\n"
-            [ -n "$FIXES" ] && NOTES="$NOTES### 🐛 Bug Fixes\n$(echo "$FIXES" | while IFS='|' read -r msg hash author date; do echo "- $msg (\`$hash\`)"; done)\n\n"
-            [ -n "$DOCS" ] && NOTES="$NOTES### 📚 Documentation\n$(echo "$DOCS" | while IFS='|' read -r msg hash author date; do echo "- $msg (\`$hash\`)"; done)\n\n"
-            [ -n "$CHORES" ] && NOTES="$NOTES### 🔧 Maintenance\n$(echo "$CHORES" | while IFS='|' read -r msg hash author date; do echo "- $msg (\`$hash\`)"; done)\n\n"
-            [ -n "$OTHERS" ] && NOTES="$NOTES### 📝 Other Changes\n$(echo "$OTHERS" | while IFS='|' read -r msg hash author date; do echo "- $msg (\`$hash\`)"; done)\n\n"
+
+            if [ -n "$FEATURES" ]; then
+              NOTES="$NOTES### ✨ Features\n$(echo "$FEATURES" | while IFS='|' read -r msg hash author date; do echo "- $msg (\`$hash\`)"; done)\n\n"
+            fi
+            if [ -n "$FIXES" ]; then
+              NOTES="$NOTES### 🐛 Bug Fixes\n$(echo "$FIXES" | while IFS='|' read -r msg hash author date; do echo "- $msg (\`$hash\`)"; done)\n\n"
+            fi
+            if [ -n "$DOCS" ]; then
+              NOTES="$NOTES### 📚 Documentation\n$(echo "$DOCS" | while IFS='|' read -r msg hash author date; do echo "- $msg (\`$hash\`)"; done)\n\n"
+            fi
+            if [ -n "$CHORES" ]; then
+              NOTES="$NOTES### 🔧 Maintenance\n$(echo "$CHORES" | while IFS='|' read -r msg hash author date; do echo "- $msg (\`$hash\`)"; done)\n\n"
+            fi
+            if [ -n "$OTHERS" ]; then
+              NOTES="$NOTES### 📝 Other Changes\n$(echo "$OTHERS" | while IFS='|' read -r msg hash author date; do echo "- $msg (\`$hash\`)"; done)\n\n"
+            fi
           else
             # Simple list
             NOTES=$(echo "$COMMITS" | while IFS='|' read -r msg hash author date; do echo "- $msg (\`$hash\`)"; done)
           fi
-          
-          [ -n "$COMPARE_URL" ] && NOTES="$NOTES\n**Full Changelog**: $COMPARE_URL"
-          
+
+          if [ -n "$COMPARE_URL" ]; then
+            NOTES="$NOTES\n**Full Changelog**: $COMPARE_URL"
+          fi
+
         elif [ "${{ inputs.format }}" == "json" ]; then
           NOTES=$(echo "$COMMITS" | jq -R -s -c 'split("\n") | map(select(length > 0) | split("|") | {message: .[0], hash: .[1], author: .[2], date: .[3]})')
         else
           # Plain format
           NOTES=$(echo "$COMMITS" | while IFS='|' read -r msg hash author date; do echo "- $msg ($hash)"; done)
         fi
-        
+
         # Save outputs
-        echo "release_notes<<EOF" >> $GITHUB_OUTPUT
-        echo -e "$NOTES" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
-        
-        echo "commit_count=$COMMIT_COUNT" >> $GITHUB_OUTPUT
-        echo "compare_url=$COMPARE_URL" >> $GITHUB_OUTPUT
-        
+        echo "release_notes<<EOF" >> "$GITHUB_OUTPUT"
+        echo -e "$NOTES" >> "$GITHUB_OUTPUT"
+        echo "EOF" >> "$GITHUB_OUTPUT"
+
+        echo "commit_count=$COMMIT_COUNT" >> "$GITHUB_OUTPUT"
+        echo "compare_url=$COMPARE_URL" >> "$GITHUB_OUTPUT"
+
         echo "✅ Generated release notes with $COMMIT_COUNT commits"
 
 branding:

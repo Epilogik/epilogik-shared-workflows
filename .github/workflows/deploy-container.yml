@@ -211,10 +211,10 @@ jobs:
             echo "🔍 Checking current container status..."
             if docker ps -a --format "table {{.Names}}" | grep -q "^${{ inputs.container_name }}$"; then
               CURRENT_IMAGE=$(docker inspect --format='{{.Config.Image}}' ${{ inputs.container_name }} 2>/dev/null || echo "none")
-              echo "current_image=$CURRENT_IMAGE" >> $GITHUB_OUTPUT
+              echo "current_image=$CURRENT_IMAGE" >> "$GITHUB_OUTPUT"
               echo "📦 Current container image: $CURRENT_IMAGE"
             else
-              echo "current_image=none" >> $GITHUB_OUTPUT
+              echo "current_image=none" >> "$GITHUB_OUTPUT"
               echo "ℹ️ No existing container found"
             fi
             
@@ -436,10 +436,10 @@ jobs:
                         $VOLUME_MOUNTS \
                         $PREVIOUS_IMAGE
                       
-                      echo "previous_image=$PREVIOUS_IMAGE" >> $GITHUB_OUTPUT
-                      echo "status=rolled-back" >> $GITHUB_OUTPUT
+                      echo "previous_image=$PREVIOUS_IMAGE" >> "$GITHUB_OUTPUT"
+                      echo "status=rolled-back" >> "$GITHUB_OUTPUT"
                     else
-                      echo "status=failed" >> $GITHUB_OUTPUT
+                      echo "status=failed" >> "$GITHUB_OUTPUT"
                     fi
                     exit 1
                   fi
@@ -460,9 +460,9 @@ jobs:
             fi
             
             # Output results
-            echo "container_id=$CONTAINER_ID" >> $GITHUB_OUTPUT
-            echo "previous_image=$PREVIOUS_IMAGE" >> $GITHUB_OUTPUT
-            echo "status=success" >> $GITHUB_OUTPUT
+            echo "container_id=$CONTAINER_ID" >> "$GITHUB_OUTPUT"
+            echo "previous_image=$PREVIOUS_IMAGE" >> "$GITHUB_OUTPUT"
+            echo "status=success" >> "$GITHUB_OUTPUT"
             
             echo "🎉 Deployment completed successfully!"
           EOF
@@ -470,7 +470,7 @@ jobs:
           # Calculate deployment time
           END_TIME=$(date +%s)
           DEPLOYMENT_TIME=$((END_TIME - START_TIME))
-          echo "deployment_time=$DEPLOYMENT_TIME" >> $GITHUB_OUTPUT
+          echo "deployment_time=$DEPLOYMENT_TIME" >> "$GITHUB_OUTPUT"
           
           echo "⏱️ Deployment completed in ${DEPLOYMENT_TIME} seconds"
 

@@ -62,16 +62,16 @@ jobs:
             VERSION=$(echo "$COMMIT_MSG" | grep -oP 'release/\K[0-9]+\.[0-9]+\.[0-9]+' | head -1)
             
             if [ -n "$VERSION" ]; then
-              echo "is_release=true" >> $GITHUB_OUTPUT
-              echo "version=$VERSION" >> $GITHUB_OUTPUT
-              echo "release_branch=release/$VERSION" >> $GITHUB_OUTPUT
-              echo "next_tag=${{ inputs.tag_prefix }}$VERSION" >> $GITHUB_OUTPUT
+              echo "is_release=true" >> "$GITHUB_OUTPUT"
+              echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+              echo "release_branch=release/$VERSION" >> "$GITHUB_OUTPUT"
+              echo "next_tag=${{ inputs.tag_prefix }}$VERSION" >> "$GITHUB_OUTPUT"
               echo "✅ Detected release merge: v$VERSION"
             else
-              echo "is_release=false" >> $GITHUB_OUTPUT
+              echo "is_release=false" >> "$GITHUB_OUTPUT"
             fi
           else
-            echo "is_release=false" >> $GITHUB_OUTPUT
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Check if tag already exists
@@ -82,10 +82,10 @@ jobs:
           git fetch --tags
           
           if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "tag_exists=true" >> $GITHUB_OUTPUT
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
             echo "⚠️  Tag $TAG already exists"
           else
-            echo "tag_exists=false" >> $GITHUB_OUTPUT
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
             echo "✅ Tag $TAG does not exist"
           fi
 
@@ -138,7 +138,7 @@ jobs:
             --notes "$RELEASE_BODY" \
             --latest)
           
-          echo "url=$RELEASE_URL" >> $GITHUB_OUTPUT
+          echo "url=$RELEASE_URL" >> "$GITHUB_OUTPUT"
           echo "✅ GitHub Release created: $RELEASE_URL"
 
       - name: Delete release branch

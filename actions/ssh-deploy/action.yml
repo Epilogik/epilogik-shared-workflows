@@ -148,12 +148,12 @@ runs:
           echo "$SERVICES"
           ALL_SERVICES="$ALL_SERVICES\n$SERVICES"
         done
-        
-        echo "status=success" >> $GITHUB_OUTPUT
-        echo "services<<EOF" >> $GITHUB_OUTPUT
-        echo -e "$ALL_SERVICES" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
-        
+
+        echo "status=success" >> "$GITHUB_OUTPUT"
+        echo "services<<EOF" >> "$GITHUB_OUTPUT"
+        echo -e "$ALL_SERVICES" >> "$GITHUB_OUTPUT"
+        echo "EOF" >> "$GITHUB_OUTPUT"
+
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo "✅ Deployment verified successfully"
 
