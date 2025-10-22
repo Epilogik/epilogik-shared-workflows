@@ -75,7 +75,7 @@ jobs:
 
       - name: 🔍 Check branch differences
         id: branch-check
-        uses: ./../../.github/actions/pr-automation/branch-check
+        uses: Epilogik/epilogik-shared-workflows/.github/actions/pr-automation/branch-check@main
         with:
           source_branch: ${{ inputs.source_branch }}
           target_branch: ${{ inputs.target_branch }}
@@ -83,7 +83,7 @@ jobs:
       - name: 🔍 Check existing PR
         if: steps.branch-check.outputs.has_changes == 'true'
         id: pr-check
-        uses: ./../../.github/actions/pr-automation/pr-check
+        uses: Epilogik/epilogik-shared-workflows/.github/actions/pr-automation/pr-check@main
         with:
           source_branch: ${{ inputs.source_branch }}
           target_branch: ${{ inputs.target_branch }}
@@ -92,7 +92,7 @@ jobs:
       - name: 📝 Generate PR summary
         if: steps.branch-check.outputs.has_changes == 'true'
         id: summary
-        uses: ./../../.github/actions/pr-automation/generate-summary
+        uses: Epilogik/epilogik-shared-workflows/.github/actions/pr-automation/generate-summary@main
         with:
           source_branch: ${{ inputs.source_branch }}
           target_branch: ${{ inputs.target_branch }}
@@ -100,7 +100,7 @@ jobs:
       - name: 🆕 Create new PR
         if: steps.branch-check.outputs.has_changes == 'true' && steps.pr-check.outputs.pr_exists == 'false'
         id: create-pr
-        uses: ./../../.github/actions/pr-automation/create-pr
+        uses: Epilogik/epilogik-shared-workflows/.github/actions/pr-automation/create-pr@main
         with:
           source_branch: ${{ inputs.source_branch }}
           target_branch: ${{ inputs.target_branch }}
@@ -116,7 +116,7 @@ jobs:
       - name: 🔄 Update existing PR
         if: steps.branch-check.outputs.has_changes == 'true' && steps.pr-check.outputs.pr_exists == 'true'
         id: update-pr
-        uses: ./../../.github/actions/pr-automation/update-pr
+        uses: Epilogik/epilogik-shared-workflows/.github/actions/pr-automation/update-pr@main
         with:
           pr_number: ${{ steps.pr-check.outputs.existing_pr_number }}
           commit_summary: ${{ steps.summary.outputs.commit_summary }}

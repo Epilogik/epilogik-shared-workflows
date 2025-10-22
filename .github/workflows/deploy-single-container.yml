@@ -118,27 +118,27 @@ jobs:
     
     steps:
       - name: Validate inputs
-        uses: ./../../.github/actions/single-container/validate
+        uses: Epilogik/epilogik-shared-workflows/.github/actions/single-container/validate@main
         with:
           environment: ${{ inputs.environment }}
           deploy_strategy: ${{ inputs.deploy_strategy }}
           docker_image: ${{ inputs.docker_image }}
 
       - name: Setup SSH
-        uses: ./../../.github/actions/single-container/ssh-setup
+        uses: Epilogik/epilogik-shared-workflows/.github/actions/single-container/ssh-setup@main
         with:
           ssh_port: ${{ secrets.ssh_port || '22' }}
 
       - name: Pre-deployment checks
         id: pre-checks
-        uses: ./../../.github/actions/single-container/prechecks
+        uses: Epilogik/epilogik-shared-workflows/.github/actions/single-container/prechecks@main
         with:
           container_name: ${{ inputs.container_name }}
           host_port: ${{ inputs.host_port }}
 
       - name: Deploy container
         id: deployment
-        uses: ./../../.github/actions/single-container/remote-run
+        uses: Epilogik/epilogik-shared-workflows/.github/actions/single-container/remote-run@main
         with:
           container_name: ${{ inputs.container_name }}
           docker_image: ${{ inputs.docker_image }}
@@ -152,6 +152,6 @@ jobs:
 
       - name: Post-deployment verification
         if: steps.deployment.outputs.status == 'success'
-        uses: ./../../.github/actions/single-container/postverify
+        uses: Epilogik/epilogik-shared-workflows/.github/actions/single-container/postverify@main
         with:
           container_name: ${{ inputs.container_name }}

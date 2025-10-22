@@ -105,14 +105,14 @@ jobs:
 
       - name: ⚙️ Setup .NET environment
         id: setup
-        uses: ./../../.github/actions/dotnet-ci/setup
+        uses: Epilogik/epilogik-shared-workflows/.github/actions/dotnet-ci/setup@main
         with:
           dotnet_version: ${{ inputs.dotnet_version }}
           solution_path: ${{ inputs.solution_path }}
           project_path: ${{ inputs.project_path }}
 
       - name: 📦 Restore dependencies
-        uses: ./../../.github/actions/dotnet-ci/restore
+        uses: Epilogik/epilogik-shared-workflows/.github/actions/dotnet-ci/restore@main
         with:
           solution_path: ${{ steps.setup.outputs.solution_path }}
           dotnet_version: ${{ inputs.dotnet_version }}
@@ -120,7 +120,7 @@ jobs:
           additional_args: ${{ inputs.additional_args }}
 
       - name: 🔨 Build solution
-        uses: ./../../.github/actions/dotnet-ci/build
+        uses: Epilogik/epilogik-shared-workflows/.github/actions/dotnet-ci/build@main
         with:
           solution_path: ${{ steps.setup.outputs.solution_path }}
           configuration: ${{ inputs.configuration }}
@@ -131,7 +131,7 @@ jobs:
       - name: 🧪 Run tests
         if: inputs.run_tests
         id: test
-        uses: ./../../.github/actions/dotnet-ci/test
+        uses: Epilogik/epilogik-shared-workflows/.github/actions/dotnet-ci/test@main
         with:
           configuration: ${{ inputs.configuration }}
           test_projects: ${{ steps.setup.outputs.test_projects }}
@@ -144,14 +144,14 @@ jobs:
       - name: 📊 Process coverage
         if: inputs.run_tests && inputs.upload_coverage
         id: coverage
-        uses: ./../../.github/actions/dotnet-ci/coverage
+        uses: Epilogik/epilogik-shared-workflows/.github/actions/dotnet-ci/coverage@main
         with:
           min_coverage: ${{ inputs.min_coverage }}
           upload_coverage: ${{ inputs.upload_coverage }}
 
       - name: 📦 Create artifacts
         id: artifacts
-        uses: ./../../.github/actions/dotnet-ci/artifacts
+        uses: Epilogik/epilogik-shared-workflows/.github/actions/dotnet-ci/artifacts@main
         with:
           configuration: ${{ inputs.configuration }}
           build_version: ${{ steps.setup.outputs.build_version }}
