@@ -1,0 +1,63 @@
+name: Deploy - Remote Run
+description: Pull image on remote and start container according to strategy
+inputs:
+  container_name:
+    description: 'Container name'
+    required: true
+  docker_image:
+    description: 'Docker image to pull'
+    required: true
+  docker_network:
+    description: 'Docker network'
+    required: false
+    default: 'epilogik-net'
+  host_port:
+    description: 'Host port'
+    required: true
+  container_port:
+    description: 'Container port'
+    required: true
+  deploy_strategy:
+    description: 'Deployment strategy'
+    required: true
+  restart_policy:
+    description: 'Restart policy'
+    required: false
+    default: 'unless-stopped'
+  env_vars:
+    description: 'Environment variables JSON'
+    required: false
+    default: '{}'
+  volumes:
+    description: 'Volumes JSON'
+    required: false
+    default: '[]'
+runs:
+  using: 'composite'
+  steps:
+    - name: Run remote deploy
+      shell: bash
+      run: |
+        set -euo pipefail
+        SSH_PORT="${{ secrets.ssh_port || '22' }}"
+        ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          CONTAINER_NAME="${{ inputs.container_name }}"
+          IMAGE_TO_PULL="${{ inputs.docker_image }}"
+
+          # Pull image
+          echo "📥 Pulling image: $IMAGE_TO_PULL"
+          docker pull "$IMAGE_TO_PULL"
+
+          # Stop & remove existing
+          if docker ps -a --format "table {{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
+            docker stop ${CONTAINER_NAME} --time=10 || true
+            docker rm ${CONTAINER_NAME} || true
+          fi
+
+          # Start new container
+          CONTAINER_ID=$(docker run -d --name "${CONTAINER_NAME}" --network "${{ inputs.docker_network }}" -p "${{ inputs.host_port }}:${{ inputs.container_port }}" --restart "${{ inputs.restart_policy }}" "$IMAGE_TO_PULL") || true
+
+          echo "CONTAINER_ID=${CONTAINER_ID:-}"
+          echo "STATUS=success"
+        REMOTE

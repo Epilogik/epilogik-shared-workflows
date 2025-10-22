@@ -1,0 +1,106 @@
+name: '.NET Create Artifacts'
+description: 'Create and upload build artifacts'
+
+inputs:
+  configuration:
+    description: 'Build configuration'
+    required: false
+    default: 'Release'
+  build_version:
+    description: 'Build version'
+    required: true
+  solution_path:
+    description: 'Solution path'
+    required: false
+    default: ''
+  project_path:
+    description: 'Main project path'
+    required: false
+    default: ''
+  upload_test_results:
+    description: 'Upload test results'
+    required: false
+    default: 'true'
+  dotnet_version:
+    description: '.NET version for metadata'
+    required: false
+    default: '8.0.x'
+
+outputs:
+  artifact_name:
+    description: 'Created artifact name'
+    value: ${{ steps.artifact.outputs.name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Upload test results
+      if: inputs.upload_test_results == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-results-${{ github.run_id }}
+        path: |
+          TestResults/**/*.trx
+          TestResults/**/*.xml
+        retention-days: 30
+        if-no-files-found: warn
+
+    - name: Create build artifact
+      id: artifact
+      shell: bash
+      run: |
+        set -euo pipefail
+        
+        ARTIFACT_NAME="build-${{ inputs.build_version }}-${{ github.run_number }}"
+        echo "name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+        
+        mkdir -p publish
+        
+        if [ -n "${{ inputs.project_path }}" ]; then
+          dotnet publish "${{ inputs.project_path }}" \
+            --configuration "${{ inputs.configuration }}" \
+            --no-build \
+            --output publish \
+            --verbosity minimal \
+            --property:Version="${{ inputs.build_version }}"
+        elif [ -n "${{ inputs.solution_path }}" ]; then
+          dotnet publish "${{ inputs.solution_path }}" \
+            --configuration "${{ inputs.configuration }}" \
+            --no-build \
+            --output publish \
+            --verbosity minimal \
+            --property:Version="${{ inputs.build_version }}"
+        else
+          PUBLISHABLE_PROJECTS=$(find . -name "*.csproj" -exec grep -l "Microsoft.NET.Sdk.Web\|OutputType>Exe" {} \;)
+          
+          if [ -n "$PUBLISHABLE_PROJECTS" ]; then
+            for project in $PUBLISHABLE_PROJECTS; do
+              dotnet publish "$project" \
+                --configuration "${{ inputs.configuration }}" \
+                --no-build \
+                --output "publish/$(basename "$project" .csproj)" \
+                --verbosity minimal \
+                --property:Version="${{ inputs.build_version }}"
+            done
+          fi
+        fi
+        
+        cat > publish/build-info.json << EOF
+        {
+          "version": "${{ inputs.build_version }}",
+          "commit": "${{ github.sha }}",
+          "branch": "${{ github.ref_name }}",
+          "build_number": "${{ github.run_number }}",
+          "build_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+          "configuration": "${{ inputs.configuration }}",
+          "dotnet_version": "${{ inputs.dotnet_version }}"
+        }
+        EOF
+
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.artifact.outputs.name }}
+        path: publish/
+        retention-days: 30
+        compression-level: 6

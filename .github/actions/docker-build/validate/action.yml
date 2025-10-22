@@ -1,0 +1,25 @@
+name: Docker - Validate
+description: Validate inputs for Docker build
+inputs:
+  dockerfile_path:
+    required: true
+  build_context:
+    required: true
+  platforms:
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Validate
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ ! -f "${{ inputs.dockerfile_path }}" ]; then
+          echo "Dockerfile not found: ${{ inputs.dockerfile_path }}"
+          exit 1
+        fi
+        if [ ! -d "${{ inputs.build_context }}" ]; then
+          echo "Build context not found: ${{ inputs.build_context }}"
+          exit 1
+        fi
+        echo "validated=true" >> "$GITHUB_OUTPUT"

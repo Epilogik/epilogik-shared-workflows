@@ -1,0 +1,36 @@
+name: Deploy - Remote Prechecks
+description: Run pre-deployment checks on the remote server (Docker, ports, disk)
+inputs:
+  container_name:
+    description: 'Container name'
+    required: true
+  host_port:
+    description: 'Host port to check'
+    required: true
+runs:
+  using: 'composite'
+  steps:
+    - name: Run remote prechecks
+      shell: bash
+      run: |
+        set -euo pipefail
+        SSH_PORT="${{ secrets.ssh_port || '22' }}"
+        ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          if ! command -v docker &> /dev/null; then
+            echo "❌ Docker is not installed on the target server"
+            exit 1
+          fi
+          echo "✅ Docker version: $(docker --version)"
+          if docker ps -a --format "table {{.Names}}" | grep -q "^${{ inputs.container_name }}$"; then
+            CURRENT_IMAGE=$(docker inspect --format='{{.Config.Image}}' ${{ inputs.container_name }} 2>/dev/null || echo "none")
+            echo "CURRENT_IMAGE=$CURRENT_IMAGE"
+          else
+            echo "CURRENT_IMAGE=none"
+          fi
+          if netstat -tlnp | grep -q ":${{ inputs.host_port }} "; then
+            echo "PORT_IN_USE=1"
+          else
+            echo "PORT_IN_USE=0"
+          fi
+        REMOTE

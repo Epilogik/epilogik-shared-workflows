@@ -1,0 +1,16 @@
+name: Docker - Inspect Image
+description: Inspect built image and report size
+inputs:
+  image_tag:
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Inspect
+      shell: bash
+      run: |
+        set -euo pipefail
+        docker buildx imagetools inspect "${{ inputs.image_tag }}" --format '{{json .}}' > image-info.json
+        SIZE_BYTES=$(jq -r '.manifest.config.size // 0' image-info.json)
+        SIZE_MB=$(echo "scale=2; $SIZE_BYTES / 1024 / 1024" | bc)
+        echo "size=$SIZE_MB" >> "$GITHUB_OUTPUT"

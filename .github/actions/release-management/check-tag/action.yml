@@ -1,0 +1,28 @@
+name: 'Check Tag Exists'
+description: 'Check if a Git tag already exists'
+
+inputs:
+  tag_name:
+    description: 'Tag name to check'
+    required: true
+
+outputs:
+  tag_exists:
+    description: 'Whether the tag already exists'
+    value: ${{ steps.check-tag.outputs.tag_exists }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check if tag already exists
+      id: check-tag
+      shell: bash
+      run: |
+        TAG="${{ inputs.tag_name }}"
+        git fetch --tags
+        
+        if git rev-parse "$TAG" >/dev/null 2>&1; then
+          echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+        fi

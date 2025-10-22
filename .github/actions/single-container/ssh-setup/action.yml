@@ -1,0 +1,20 @@
+name: Deploy - SSH Setup
+description: Setup SSH keys and known_hosts for deployment
+inputs:
+  ssh_port:
+    description: 'SSH port'
+    required: false
+    default: '22'
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup SSH
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        echo "${{ secrets.ssh_key }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H -p "${{ inputs.ssh_port }}" ${{ secrets.ssh_host }} >> ~/.ssh/known_hosts
+        echo "✅ SSH setup complete"

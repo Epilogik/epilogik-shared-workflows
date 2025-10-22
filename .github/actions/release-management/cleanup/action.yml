@@ -1,0 +1,24 @@
+name: 'Cleanup Release Branch'
+description: 'Delete release branch after successful release'
+
+inputs:
+  release_branch:
+    description: 'Release branch to delete'
+    required: true
+  github_token:
+    description: 'GitHub token'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Delete release branch
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+      run: |
+        RELEASE_BRANCH="${{ inputs.release_branch }}"
+        
+        if git ls-remote --heads origin "$RELEASE_BRANCH" | grep -q "$RELEASE_BRANCH"; then
+          git push origin --delete "$RELEASE_BRANCH"
+        fi

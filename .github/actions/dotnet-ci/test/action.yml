@@ -1,0 +1,116 @@
+name: '.NET Run Tests'
+description: 'Run unit and integration tests'
+
+inputs:
+  configuration:
+    description: 'Build configuration'
+    required: false
+    default: 'Release'
+  test_projects:
+    description: 'Test projects to run'
+    required: false
+    default: ''
+  integration_test_projects:
+    description: 'Integration test projects'
+    required: false
+    default: ''
+  solution_path:
+    description: 'Solution path for fallback'
+    required: false
+    default: ''
+  run_tests:
+    description: 'Run unit tests'
+    required: false
+    default: 'true'
+  run_integration_tests:
+    description: 'Run integration tests'
+    required: false
+    default: 'false'
+  upload_coverage:
+    description: 'Collect code coverage'
+    required: false
+    default: 'true'
+
+outputs:
+  test_count:
+    description: 'Total tests executed'
+    value: ${{ steps.test.outputs.test_count }}
+  failed_tests:
+    description: 'Failed tests count'
+    value: ${{ steps.test.outputs.failed_tests }}
+  passed_tests:
+    description: 'Passed tests count'
+    value: ${{ steps.test.outputs.passed_tests }}
+  test_outcome:
+    description: 'Test execution outcome'
+    value: ${{ steps.test.outcome }}
+
+runs:
+  using: composite
+  steps:
+    - name: Run unit tests
+      if: inputs.run_tests == 'true'
+      id: test
+      shell: bash
+      run: |
+        set -euo pipefail
+        
+        mkdir -p TestResults
+        
+        TEST_ARGS=(
+          --configuration "${{ inputs.configuration }}"
+          --no-build
+          --verbosity normal
+          --logger "trx;LogFileName=test-results.trx"
+          --logger "console;verbosity=normal"
+          --results-directory TestResults
+        )
+        
+        if [ "${{ inputs.upload_coverage }}" == "true" ]; then
+          TEST_ARGS+=(
+            --collect:"XPlat Code Coverage"
+            --settings:coverlet.runsettings
+          )
+        fi
+        
+        TEST_EXIT_CODE=0
+        if [ -n "${{ inputs.test_projects }}" ]; then
+          for project in ${{ inputs.test_projects }}; do
+            dotnet test "$project" "${TEST_ARGS[@]}" || TEST_EXIT_CODE=$?
+          done
+        else
+          if [ -n "${{ inputs.solution_path }}" ]; then
+            dotnet test "${{ inputs.solution_path }}" "${TEST_ARGS[@]}" || TEST_EXIT_CODE=$?
+          else
+            dotnet test "${TEST_ARGS[@]}" || TEST_EXIT_CODE=$?
+          fi
+        fi
+        
+        if [ -f "TestResults/test-results.trx" ]; then
+          TEST_COUNT=$(grep -o 'total="[0-9]*"' TestResults/test-results.trx | grep -o '[0-9]*' || echo "0")
+          FAILED_COUNT=$(grep -o 'failed="[0-9]*"' TestResults/test-results.trx | grep -o '[0-9]*' || echo "0")
+          PASSED_COUNT=$(grep -o 'passed="[0-9]*"' TestResults/test-results.trx | grep -o '[0-9]*' || echo "0")
+          
+          echo "test_count=${TEST_COUNT}" >> "$GITHUB_OUTPUT"
+          echo "failed_tests=${FAILED_COUNT}" >> "$GITHUB_OUTPUT"
+          echo "passed_tests=${PASSED_COUNT}" >> "$GITHUB_OUTPUT"
+        fi
+        
+        exit ${TEST_EXIT_CODE}
+
+    - name: Run integration tests
+      if: inputs.run_integration_tests == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        
+        if [ -n "${{ inputs.integration_test_projects }}" ]; then
+          for project in ${{ inputs.integration_test_projects }}; do
+            dotnet test "$project" \
+              --configuration "${{ inputs.configuration }}" \
+              --no-build \
+              --verbosity normal \
+              --logger "trx;LogFileName=integration-test-results.trx" \
+              --results-directory TestResults
+          done
+        fi

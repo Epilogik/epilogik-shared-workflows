@@ -1,0 +1,44 @@
+name: Compose - Validate
+description: Validate inputs for Docker Compose deployment
+inputs:
+  environment:
+    required: true
+  compose_files:
+    required: true
+  source_path:
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Validate environment
+      shell: bash
+      run: |
+        case "${{ inputs.environment }}" in
+          staging|production|development)
+            echo "Valid environment: ${{ inputs.environment }}"
+            ;;
+          *)
+            echo "Invalid environment: ${{ inputs.environment }}"
+            exit 1
+            ;;
+        esac
+
+    - name: Validate compose files
+      shell: bash
+      run: |
+        IFS=',' read -ra FILES <<< "${{ inputs.compose_files }}"
+        for file in "${FILES[@]}"; do
+          file=$(echo "$file" | xargs)
+          source_file="${{ inputs.source_path }}${file}"
+          
+          if [ ! -f "$source_file" ]; then
+            source_file="${{ inputs.environment }}/${file}"
+          fi
+          
+          if [ ! -f "$source_file" ]; then
+            echo "Compose file not found: $source_file"
+            exit 1
+          fi
+          echo "Found: $source_file"
+        done

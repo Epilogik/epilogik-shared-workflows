@@ -1,0 +1,79 @@
+name: 'Create Pull Request'
+description: 'Create a new pull request with specified options'
+
+inputs:
+  source_branch:
+    description: 'Source branch'
+    required: true
+  target_branch:
+    description: 'Target branch'
+    required: true
+  pr_title_prefix:
+    description: 'PR title prefix'
+    required: false
+    default: '🔄 Auto'
+  pr_body:
+    description: 'PR body content'
+    required: true
+  labels:
+    description: 'Comma-separated labels'
+    required: false
+    default: ''
+  reviewers:
+    description: 'Comma-separated reviewers'
+    required: false
+    default: ''
+  team_reviewers:
+    description: 'Comma-separated team reviewers'
+    required: false
+    default: ''
+  auto_merge:
+    description: 'Enable auto-merge'
+    required: false
+    default: 'false'
+  require_status_checks:
+    description: 'Require status checks'
+    required: false
+    default: 'true'
+  github_token:
+    description: 'GitHub token'
+    required: true
+
+outputs:
+  pr_number:
+    description: 'Created PR number'
+    value: ${{ steps.create-pr.outputs.pr_number }}
+  pr_url:
+    description: 'Created PR URL'
+    value: ${{ steps.create-pr.outputs.pr_url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Create PR
+      id: create-pr
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+      run: |
+        PR_URL=$(gh pr create \
+          --title "${{ inputs.pr_title_prefix }}: Merge ${{ inputs.source_branch }} → ${{ inputs.target_branch }}" \
+          --body "${{ inputs.pr_body }}" \
+          --base ${{ inputs.target_branch }} \
+          --head ${{ inputs.source_branch }} \
+          $([ -n "${{ inputs.labels }}" ] && echo "--label ${{ inputs.labels }}" || echo "") \
+          $([ -n "${{ inputs.reviewers }}" ] && echo "--reviewer ${{ inputs.reviewers }}" || echo "") \
+          $([ -n "${{ inputs.team_reviewers }}" ] && echo "--team-reviewer ${{ inputs.team_reviewers }}" || echo ""))
+
+        PR_NUMBER=$(echo "$PR_URL" | grep -oP '\d+$')
+        
+        echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+        echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
+        
+        if [ "${{ inputs.auto_merge }}" == "true" ]; then
+          if [ "${{ inputs.require_status_checks }}" == "true" ]; then
+            gh pr merge $PR_NUMBER --auto --squash
+          else
+            gh pr merge $PR_NUMBER --squash
+          fi
+        fi

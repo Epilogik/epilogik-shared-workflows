@@ -1,0 +1,20 @@
+name: Deploy - Post Verify
+description: Run simple post-deployment checks on the remote container
+inputs:
+  container_name:
+    description: 'Container name'
+    required: true
+runs:
+  using: 'composite'
+  steps:
+    - name: Post-deployment verification
+      shell: bash
+      run: |
+        set -euo pipefail
+        SSH_PORT="${{ secrets.ssh_port || '22' }}"
+        ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'bash -s' <<'REMOTE'
+          echo "📊 Container status:"
+          docker ps --filter "name=${{ inputs.container_name }}" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+          echo "💾 Container resource usage:"
+          docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}" ${{ inputs.container_name }} || true
+        REMOTE

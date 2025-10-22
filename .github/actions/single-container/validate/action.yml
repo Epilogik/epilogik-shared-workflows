@@ -1,0 +1,55 @@
+name: Deploy - Validate Inputs
+description: Validate inputs and required secrets for deployment
+inputs:
+  environment:
+    description: 'Deployment environment'
+    required: true
+  deploy_strategy:
+    description: 'Deployment strategy'
+    required: true
+  docker_image:
+    description: 'Docker image to deploy'
+    required: true
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate required secrets and inputs
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "🔍 Validating deployment inputs..."
+
+        if [ -z "${{ secrets.ssh_host }}" ]; then
+          echo "❌ Error: ssh_host secret is not set"
+          exit 1
+        fi
+        if [ -z "${{ secrets.ssh_user }}" ]; then
+          echo "❌ Error: ssh_user secret is not set"
+          exit 1
+        fi
+        if [ -z "${{ secrets.ssh_key }}" ]; then
+          echo "❌ Error: ssh_key secret is not set"
+          exit 1
+        fi
+
+        case "${{ inputs.environment }}" in
+          staging|production|development)
+            echo "✅ Valid environment: ${{ inputs.environment }}"
+            ;;
+          *)
+            echo "❌ Error: Invalid environment '${{ inputs.environment }}'"
+            exit 1
+            ;;
+        esac
+
+        case "${{ inputs.deploy_strategy }}" in
+          rolling|blue-green|recreate)
+            echo "✅ Valid deployment strategy: ${{ inputs.deploy_strategy }}"
+            ;;
+          *)
+            echo "❌ Error: Invalid deployment strategy '${{ inputs.deploy_strategy }}'"
+            exit 1
+            ;;
+        esac
+
+        echo "🐳 Image: ${{ inputs.docker_image }}"

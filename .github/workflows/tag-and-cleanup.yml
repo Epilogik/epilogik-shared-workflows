@@ -38,139 +38,96 @@ jobs:
   tag-and-cleanup:
     runs-on: ubuntu-latest
     outputs:
-      tag_created: ${{ steps.detect-release.outputs.is_release }}
-      tag_name: ${{ steps.detect-release.outputs.next_tag }}
-      release_url: ${{ steps.create-release.outputs.url }}
+      tag_created: ${{ steps.result.outputs.tag_created }}
+      tag_name: ${{ steps.detect.outputs.next_tag }}
+      release_url: ${{ steps.create-release.outputs.release_url }}
     
     steps:
-      - name: Checkout code
+      - name: 📥 Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup Git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: 🔍 Detect release
+        id: detect
+        uses: ./../../.github/actions/release-management/detect-release
+        with:
+          tag_prefix: ${{ inputs.tag_prefix }}
 
-      - name: Detect merged release branch
-        id: detect-release
-        run: |
-          COMMIT_MSG=$(git log -1 --pretty=%B)
-          
-          if echo "$COMMIT_MSG" | grep -q "Merge pull request.*release/"; then
-            VERSION=$(echo "$COMMIT_MSG" | grep -oP 'release/\K[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-            
-            if [ -n "$VERSION" ]; then
-              echo "is_release=true" >> "$GITHUB_OUTPUT"
-              echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-              echo "release_branch=release/$VERSION" >> "$GITHUB_OUTPUT"
-              echo "next_tag=${{ inputs.tag_prefix }}$VERSION" >> "$GITHUB_OUTPUT"
-              echo "✅ Detected release merge: v$VERSION"
-            else
-              echo "is_release=false" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            echo "is_release=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Check if tag already exists
-        if: steps.detect-release.outputs.is_release == 'true'
+      - name: 🏷️ Check existing tag
+        if: steps.detect.outputs.is_release == 'true'
         id: check-tag
-        run: |
-          TAG="${{ steps.detect-release.outputs.next_tag }}"
-          git fetch --tags
-          
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
-            echo "⚠️  Tag $TAG already exists"
-          else
-            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
-            echo "✅ Tag $TAG does not exist"
-          fi
+        uses: ./../../.github/actions/release-management/check-tag
+        with:
+          tag_name: ${{ steps.detect.outputs.next_tag }}
 
-      - name: Generate release notes
-        if: steps.detect-release.outputs.is_release == 'true' && steps.check-tag.outputs.tag_exists == 'false'
+      - name: 📝 Generate release notes
+        if: steps.detect.outputs.is_release == 'true' && steps.check-tag.outputs.tag_exists == 'false'
         id: notes
         uses: Epilogik/epilogik-shared-workflows/actions/release-notes@v1
         with:
           format: 'markdown'
           group_by: 'type'
 
-      - name: Create Git Tag
-        if: steps.detect-release.outputs.is_release == 'true' && steps.check-tag.outputs.tag_exists == 'false'
-        run: |
-          TAG="${{ steps.detect-release.outputs.next_tag }}"
-          git tag -a "$TAG" -m "Release $TAG"
-          git push origin "$TAG"
-          echo "✅ Tag $TAG created"
+      - name: 🏷️ Create Git tag
+        if: steps.detect.outputs.is_release == 'true' && steps.check-tag.outputs.tag_exists == 'false'
+        uses: ./../../.github/actions/release-management/create-tag
+        with:
+          tag_name: ${{ steps.detect.outputs.next_tag }}
 
-      - name: Create GitHub Release
-        if: steps.detect-release.outputs.is_release == 'true' && steps.check-tag.outputs.tag_exists == 'false' && inputs.create_github_release
+      - name: 🚀 Create GitHub release
+        if: steps.detect.outputs.is_release == 'true' && steps.check-tag.outputs.tag_exists == 'false' && inputs.create_github_release
         id: create-release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./../../.github/actions/release-management/create-release
+        with:
+          tag_name: ${{ steps.detect.outputs.next_tag }}
+          version: ${{ steps.detect.outputs.version }}
+          release_notes: ${{ steps.notes.outputs.release_notes }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🧹 Cleanup release branch
+        if: steps.detect.outputs.is_release == 'true' && inputs.delete_release_branch
+        uses: ./../../.github/actions/release-management/cleanup
+        with:
+          release_branch: ${{ steps.detect.outputs.release_branch }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 📋 Set outputs
+        id: result
+        shell: bash
         run: |
-          TAG="${{ steps.detect-release.outputs.next_tag }}"
-          VERSION="${{ steps.detect-release.outputs.version }}"
-          
-          RELEASE_BODY="## 🚀 Release $TAG
-
-          ### 📝 Changes
-          ${{ steps.notes.outputs.release_notes }}
-
-          ### 🎯 Deployment Information
-          - **Staging:** ✅ Deployed and tested
-          - **Production:** ✅ Deployed and verified
-          - **Release Date:** $(date -u +'%Y-%m-%d')
-
-          ### 📦 Artifacts
-          - All services deployed and running
-          - Docker images updated
-
-          ${{ steps.notes.outputs.compare_url }}
-
-          ---
-          **Released on:** $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
-
-          RELEASE_URL=$(gh release create "$TAG" \
-            --title "Release $TAG" \
-            --notes "$RELEASE_BODY" \
-            --latest)
-          
-          echo "url=$RELEASE_URL" >> "$GITHUB_OUTPUT"
-          echo "✅ GitHub Release created: $RELEASE_URL"
-
-      - name: Delete release branch
-        if: steps.detect-release.outputs.is_release == 'true' && inputs.delete_release_branch
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          RELEASE_BRANCH="${{ steps.detect-release.outputs.release_branch }}"
-          
-          if git ls-remote --heads origin "$RELEASE_BRANCH" | grep -q "$RELEASE_BRANCH"; then
-            git push origin --delete "$RELEASE_BRANCH"
-            echo "✅ Release branch $RELEASE_BRANCH deleted"
+          if [ "${{ steps.detect.outputs.is_release }}" == "true" ] && [ "${{ steps.check-tag.outputs.tag_exists }}" == "false" ]; then
+            echo "tag_created=true" >> $GITHUB_OUTPUT
           else
-            echo "ℹ️  Release branch already deleted"
+            echo "tag_created=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Summary
-        if: steps.detect-release.outputs.is_release == 'true'
+      - name: 📋 Generate summary
+        if: steps.detect.outputs.is_release == 'true'
+        shell: bash
         run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🎉 Release ${{ steps.detect-release.outputs.next_tag }} Finalized"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "## 🎉 Release Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Release Detected | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | ${{ steps.detect.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | ${{ steps.detect.outputs.next_tag }} |" >> $GITHUB_STEP_SUMMARY
+          
           if [ "${{ steps.check-tag.outputs.tag_exists }}" == "false" ]; then
-            echo "✅ Tag created: ${{ steps.detect-release.outputs.next_tag }}"
-            ${{ inputs.create_github_release && 'echo "✅ GitHub Release created"' || '' }}
+            echo "| Tag Created | ✅ |" >> $GITHUB_STEP_SUMMARY
+            if [ "${{ inputs.create_github_release }}" == "true" ]; then
+              echo "| GitHub Release | ✅ |" >> $GITHUB_STEP_SUMMARY
+            fi
+            if [ "${{ inputs.delete_release_branch }}" == "true" ]; then
+              echo "| Branch Cleanup | ✅ |" >> $GITHUB_STEP_SUMMARY
+            fi
           else
-            echo "ℹ️  Tag already existed"
+            echo "| Tag Status | ⚠️ Already exists |" >> $GITHUB_STEP_SUMMARY
           fi
-          ${{ inputs.delete_release_branch && 'echo "✅ Release branch cleaned up"' || '' }}
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-      - name: No release detected
-        if: steps.detect-release.outputs.is_release == 'false'
+      - name: ℹ️ No release detected
+        if: steps.detect.outputs.is_release == 'false'
+        shell: bash
         run: |
-          echo "ℹ️  Not a release merge - no action taken"
+          echo "## ℹ️ No Release Detected" >> $GITHUB_STEP_SUMMARY
+          echo "Current commit is not a release merge - no action taken." >> $GITHUB_STEP_SUMMARY

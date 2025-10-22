@@ -1,0 +1,38 @@
+name: 'Update Pull Request'
+description: 'Update existing pull request with new changes'
+
+inputs:
+  pr_number:
+    description: 'PR number to update'
+    required: true
+  commit_summary:
+    description: 'New commit summary'
+    required: true
+  commit_count:
+    description: 'Total commit count'
+    required: true
+  github_token:
+    description: 'GitHub token'
+    required: true
+
+outputs:
+  updated:
+    description: 'Whether PR was updated'
+    value: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Update existing PR
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+      run: |
+        COMMENT="🔄 **Updated** • $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+
+        ### New Changes
+        ${{ inputs.commit_summary }}
+
+        **Total commits ahead:** ${{ inputs.commit_count }}"
+
+        gh pr comment "${{ inputs.pr_number }}" --body "$COMMENT"

@@ -1,0 +1,18 @@
+name: Docker - Parse Build Args
+description: Create build-args file when provided
+inputs:
+  build_args:
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Parse build args
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -n "${{ inputs.build_args }}" ]; then
+          echo "${{ inputs.build_args }}" > build-args.txt
+          echo "build_args_file=build-args.txt" >> "$GITHUB_OUTPUT"
+        else
+          echo "build_args_file=" >> "$GITHUB_OUTPUT"
+        fi

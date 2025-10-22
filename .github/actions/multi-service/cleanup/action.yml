@@ -1,0 +1,17 @@
+name: Compose - Cleanup
+description: Cleanup old Docker images and containers
+inputs:
+  deploy_path:
+    required: true
+  environment:
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Cleanup images
+      shell: bash
+      run: |
+        ssh -i ~/.ssh/id_rsa \
+          -p ${{ secrets.ssh_port || '22' }} \
+          ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} \
+          "docker image prune -af --filter 'until=24h' || true"

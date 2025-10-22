@@ -1,0 +1,54 @@
+name: '.NET Build Solution'
+description: 'Build .NET solution or projects'
+
+inputs:
+  solution_path:
+    description: 'Path to solution file'
+    required: false
+    default: ''
+  configuration:
+    description: 'Build configuration'
+    required: false
+    default: 'Release'
+  build_version:
+    description: 'Build version'
+    required: true
+  fail_fast:
+    description: 'Fail fast on warnings'
+    required: false
+    default: 'true'
+  additional_args:
+    description: 'Additional build arguments'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Build solution
+      shell: bash
+      run: |
+        set -euo pipefail
+        
+        BUILD_ARGS=(
+          --configuration "${{ inputs.configuration }}"
+          --no-restore
+          --verbosity minimal
+          --property:Version="${{ inputs.build_version }}"
+          --property:AssemblyVersion="${{ inputs.build_version }}"
+          --property:FileVersion="${{ inputs.build_version }}"
+        )
+        
+        if [ "${{ inputs.fail_fast }}" == "true" ]; then
+          BUILD_ARGS+=(--property:TreatWarningsAsErrors=true)
+        fi
+        
+        if [ -n "${{ inputs.additional_args }}" ]; then
+          BUILD_ARGS+=(${{ inputs.additional_args }})
+        fi
+        
+        if [ -n "${{ inputs.solution_path }}" ]; then
+          dotnet build "${{ inputs.solution_path }}" "${BUILD_ARGS[@]}"
+        else
+          dotnet build "${BUILD_ARGS[@]}"
+        fi

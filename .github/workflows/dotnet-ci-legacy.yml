@@ -1,0 +1,603 @@
+name: .NET CI
+
+on:
+  workflow_call:
+    inputs:
+      dotnet_version:
+        description: '.NET version to use (e.g., 8.0.x, 9.0.x)'
+        required: false
+        type: string
+        default: '8.0.x'
+      configuration:
+        description: 'Build configuration (Debug/Release)'
+        required: false
+        type: string
+        default: 'Release'
+      min_coverage:
+        description: 'Minimum code coverage percentage (0-100)'
+        required: false
+        type: number
+        default: 80
+      solution_path:
+        description: 'Path to solution file (optional, auto-detect if empty)'
+        required: false
+        type: string
+        default: ''
+      project_path:
+        description: 'Path to specific project file (optional)'
+        required: false
+        type: string
+        default: ''
+      run_tests:
+        description: 'Whether to run unit tests'
+        required: false
+        type: boolean
+        default: true
+      run_integration_tests:
+        description: 'Whether to run integration tests'
+        required: false
+        type: boolean
+        default: false
+      upload_coverage:
+        description: 'Whether to upload coverage reports'
+        required: false
+        type: boolean
+        default: true
+      upload_test_results:
+        description: 'Whether to upload test results'
+        required: false
+        type: boolean
+        default: true
+      enable_caching:
+        description: 'Enable NuGet package caching'
+        required: false
+        type: boolean
+        default: true
+      fail_fast:
+        description: 'Fail fast on first error'
+        required: false
+        type: boolean
+        default: true
+      additional_args:
+        description: 'Additional arguments for dotnet commands'
+        required: false
+        type: string
+        default: ''
+    outputs:
+      coverage_percentage:
+        description: 'Code coverage percentage'
+        value: ${{ jobs.ci.outputs.coverage }}
+      test_result:
+        description: 'Test result status'
+        value: ${{ jobs.ci.outputs.test_status }}
+      build_artifact:
+        description: 'Build artifact name'
+        value: ${{ jobs.ci.outputs.artifact_name }}
+      test_count:
+        description: 'Total number of tests executed'
+        value: ${{ jobs.ci.outputs.test_count }}
+      failed_tests:
+        description: 'Number of failed tests'
+        value: ${{ jobs.ci.outputs.failed_tests }}
+      build_version:
+        description: 'Build version/commit hash'
+        value: ${{ jobs.ci.outputs.build_version }}
+
+jobs:
+  ci:
+    name: 🔨 Build, Test & Quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      coverage: ${{ steps.coverage.outputs.coverage }}
+      test_status: ${{ steps.test.outcome }}
+      artifact_name: ${{ steps.artifact.outputs.name }}
+      test_count: ${{ steps.test.outputs.test_count }}
+      failed_tests: ${{ steps.test.outputs.failed_tests }}
+      build_version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Required for GitVersion
+          token: ${{ github.token }}
+
+      - name: 🔍 Auto-detect project structure
+        id: detect
+        run: |
+          set -euo pipefail
+          
+          echo "🔍 Auto-detecting project structure..."
+          
+          # Find solution file
+          if [ -n "${{ inputs.solution_path }}" ]; then
+            SOLUTION_PATH="${{ inputs.solution_path }}"
+          else
+            SOLUTION_PATH=$(find . -maxdepth 2 -name "*.sln" | head -1)
+          fi
+          
+          # Find project files
+          if [ -n "${{ inputs.project_path }}" ]; then
+            PROJECT_PATH="${{ inputs.project_path }}"
+          else
+            PROJECT_PATH=$(find . -name "*.csproj" -not -path "*/bin/*" -not -path "*/obj/*" | head -1)
+          fi
+          
+          # Find test projects
+          TEST_PROJECTS=$(find . -name "*Test*.csproj" -o -name "*.Tests.csproj" -o -name "*.Test.csproj" | tr '\n' ' ')
+          INTEGRATION_TEST_PROJECTS=$(find . -name "*IntegrationTest*.csproj" -o -name "*.IntegrationTests.csproj" | tr '\n' ' ')
+          
+          echo "solution_path=${SOLUTION_PATH}" >> "$GITHUB_OUTPUT"
+          echo "project_path=${PROJECT_PATH}" >> "$GITHUB_OUTPUT"
+          echo "test_projects=${TEST_PROJECTS}" >> "$GITHUB_OUTPUT"
+          echo "integration_test_projects=${INTEGRATION_TEST_PROJECTS}" >> "$GITHUB_OUTPUT"
+          
+          echo "✅ Detection complete:"
+          echo "   Solution: ${SOLUTION_PATH:-'Not found'}"
+          echo "   Main Project: ${PROJECT_PATH:-'Not found'}"
+          echo "   Test Projects: ${TEST_PROJECTS:-'None found'}"
+          echo "   Integration Tests: ${INTEGRATION_TEST_PROJECTS:-'None found'}"
+
+      - name: 🏷️ Generate build version
+        id: version
+        run: |
+          # Create a semantic version based on commit
+          COMMIT_HASH=$(git rev-parse --short HEAD)
+          COMMIT_COUNT=$(git rev-list --count HEAD)
+          BRANCH_NAME=$(echo "${GITHUB_REF_NAME}" | sed 's/[^a-zA-Z0-9]/-/g')
+          
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION="1.0.${COMMIT_COUNT}-${BRANCH_NAME}.${COMMIT_HASH}"
+          fi
+          
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "📦 Build Version: ${VERSION}"
+
+      - name: ⚙️ Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+          dotnet-quality: 'ga' # Only use GA releases
+
+      - name: 📋 Display environment info
+        run: |
+          echo "## 🔧 Environment Information" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| .NET Version | $(dotnet --version) |" >> $GITHUB_STEP_SUMMARY
+          echo "| OS | $(uname -a) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Runtime | $(dotnet --list-runtimes | head -1) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build Config | ${{ inputs.configuration }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Solution | ${{ steps.detect.outputs.solution_path }} |" >> $GITHUB_STEP_SUMMARY
+
+      - name: 📦 Cache NuGet packages
+        if: inputs.enable_caching
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.nuget/packages
+            **/obj/project.assets.json
+            **/obj/*.csproj.nuget.*
+          key: nuget-${{ runner.os }}-${{ inputs.dotnet_version }}-${{ hashFiles('**/*.csproj', '**/*.props', '**/*.targets') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-${{ inputs.dotnet_version }}-
+            nuget-${{ runner.os }}-
+
+      - name: 🔄 Restore dependencies
+        run: |
+          set -euo pipefail
+          
+          echo "🔄 Restoring NuGet packages..."
+          
+          if [ -n "${{ steps.detect.outputs.solution_path }}" ]; then
+            echo "📁 Restoring solution: ${{ steps.detect.outputs.solution_path }}"
+            dotnet restore "${{ steps.detect.outputs.solution_path }}" \
+              --verbosity minimal \
+              --configfile nuget.config \
+              ${{ inputs.additional_args }}
+          else
+            echo "📁 Restoring all projects in current directory"
+            dotnet restore \
+              --verbosity minimal \
+              ${{ inputs.additional_args }}
+          fi
+          
+          echo "✅ Package restoration completed"
+
+      - name: 🔨 Build solution
+        run: |
+          set -euo pipefail
+          
+          echo "🔨 Building solution..."
+          
+          BUILD_ARGS=(
+            --configuration "${{ inputs.configuration }}"
+            --no-restore
+            --verbosity minimal
+            --property:Version="${{ steps.version.outputs.version }}"
+            --property:AssemblyVersion="${{ steps.version.outputs.version }}"
+            --property:FileVersion="${{ steps.version.outputs.version }}"
+          )
+          
+          if [ "${{ inputs.fail_fast }}" == "true" ]; then
+            BUILD_ARGS+=(--property:TreatWarningsAsErrors=true)
+          fi
+          
+          if [ -n "${{ inputs.additional_args }}" ]; then
+            BUILD_ARGS+=(${{ inputs.additional_args }})
+          fi
+          
+          if [ -n "${{ steps.detect.outputs.solution_path }}" ]; then
+            echo "📁 Building solution: ${{ steps.detect.outputs.solution_path }}"
+            dotnet build "${{ steps.detect.outputs.solution_path }}" "${BUILD_ARGS[@]}"
+          else
+            echo "📁 Building all projects"
+            dotnet build "${BUILD_ARGS[@]}"
+          fi
+          
+          echo "✅ Build completed successfully"
+
+      - name: 🧪 Run unit tests
+        if: inputs.run_tests
+        id: test
+        continue-on-error: false
+        run: |
+          set -euo pipefail
+          
+          echo "🧪 Running unit tests..."
+          
+          # Create test results directory
+          mkdir -p TestResults
+          
+          TEST_ARGS=(
+            --configuration "${{ inputs.configuration }}"
+            --no-build
+            --verbosity normal
+            --logger "trx;LogFileName=test-results.trx"
+            --logger "console;verbosity=normal"
+            --results-directory TestResults
+          )
+          
+          # Add coverage collection if enabled
+          if [ "${{ inputs.upload_coverage }}" == "true" ]; then
+            TEST_ARGS+=(
+              --collect:"XPlat Code Coverage"
+              --settings:coverlet.runsettings
+            )
+          fi
+          
+          # Run tests
+          if [ -n "${{ steps.detect.outputs.test_projects }}" ]; then
+            echo "📁 Running tests from specific test projects"
+            TEST_EXIT_CODE=0
+            for project in ${{ steps.detect.outputs.test_projects }}; do
+              echo "🎯 Testing: $project"
+              if ! dotnet test "$project" "${TEST_ARGS[@]}"; then
+                TEST_EXIT_CODE=1
+              fi
+            done
+          else
+            if [ -n "${{ steps.detect.outputs.solution_path }}" ]; then
+              echo "📁 Running all tests in solution"
+              dotnet test "${{ steps.detect.outputs.solution_path }}" "${TEST_ARGS[@]}" || TEST_EXIT_CODE=$?
+            else
+              echo "📁 Running all tests in workspace"
+              dotnet test "${TEST_ARGS[@]}" || TEST_EXIT_CODE=$?
+            fi
+          fi
+          
+          # Parse test results
+          if [ -f "TestResults/test-results.trx" ]; then
+            # Extract test metrics using XML parsing
+            TEST_COUNT=$(grep -o 'total="[0-9]*"' TestResults/test-results.trx | grep -o '[0-9]*' || echo "0")
+            FAILED_COUNT=$(grep -o 'failed="[0-9]*"' TestResults/test-results.trx | grep -o '[0-9]*' || echo "0")
+            PASSED_COUNT=$(grep -o 'passed="[0-9]*"' TestResults/test-results.trx | grep -o '[0-9]*' || echo "0")
+            
+            echo "test_count=${TEST_COUNT}" >> "$GITHUB_OUTPUT"
+            echo "failed_tests=${FAILED_COUNT}" >> "$GITHUB_OUTPUT"
+            echo "passed_tests=${PASSED_COUNT}" >> "$GITHUB_OUTPUT"
+            
+            echo "📊 Test Results: ${PASSED_COUNT} passed, ${FAILED_COUNT} failed, ${TEST_COUNT} total"
+          fi
+          
+          # Exit with appropriate code
+          exit ${TEST_EXIT_CODE:-0}
+
+      - name: 🧪 Run integration tests
+        if: inputs.run_integration_tests
+        continue-on-error: false
+        run: |
+          set -euo pipefail
+          
+          echo "🧪 Running integration tests..."
+          
+          if [ -n "${{ steps.detect.outputs.integration_test_projects }}" ]; then
+            for project in ${{ steps.detect.outputs.integration_test_projects }}; do
+              echo "🎯 Integration testing: $project"
+              dotnet test "$project" \
+                --configuration "${{ inputs.configuration }}" \
+                --no-build \
+                --verbosity normal \
+                --logger "trx;LogFileName=integration-test-results.trx" \
+                --results-directory TestResults
+            done
+          else
+            echo "ℹ️ No integration test projects found"
+          fi
+
+      - name: 📊 Process coverage reports
+        if: inputs.run_tests && inputs.upload_coverage
+        id: coverage
+        run: |
+          set -euo pipefail
+          
+          echo "🔍 Processing test coverage reports..."
+          
+          # Find coverage files
+          COVERAGE_FILES=$(find TestResults -name "coverage.cobertura.xml" -type f)
+          
+          if [ -z "$COVERAGE_FILES" ]; then
+            echo "❌ No coverage reports found"
+            echo "coverage=0" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          
+          echo "📁 Found coverage files:"
+          echo "$COVERAGE_FILES"
+          
+          # Process each coverage file and calculate overall coverage
+          TOTAL_LINES=0
+          COVERED_LINES=0
+          
+          for file in $COVERAGE_FILES; do
+            echo "📊 Processing: $file"
+            
+            # Extract coverage metrics using xmllint if available, fallback to grep
+            if command -v xmllint &> /dev/null; then
+              LINE_RATE=$(xmllint --xpath "string(/coverage/@line-rate)" "$file" 2>/dev/null || echo "0")
+              LINES_COVERED=$(xmllint --xpath "string(/coverage/@lines-covered)" "$file" 2>/dev/null || echo "0")
+              LINES_VALID=$(xmllint --xpath "string(/coverage/@lines-valid)" "$file" 2>/dev/null || echo "0")
+            else
+              LINE_RATE=$(grep -oP 'line-rate="\K[^"]*' "$file" | head -1 || echo "0")
+              LINES_COVERED=$(grep -oP 'lines-covered="\K[^"]*' "$file" | head -1 || echo "0")
+              LINES_VALID=$(grep -oP 'lines-valid="\K[^"]*' "$file" | head -1 || echo "0")
+            fi
+            
+            echo "  Line rate: $LINE_RATE"
+            echo "  Lines covered: $LINES_COVERED"
+            echo "  Lines valid: $LINES_VALID"
+            
+            # Accumulate totals
+            TOTAL_LINES=$((TOTAL_LINES + ${LINES_VALID:-0}))
+            COVERED_LINES=$((COVERED_LINES + ${LINES_COVERED:-0}))
+          done
+          
+          # Calculate overall coverage percentage
+          if [ "$TOTAL_LINES" -gt 0 ]; then
+            COVERAGE=$(python3 -c "print(round(($COVERED_LINES / $TOTAL_LINES) * 100, 2))")
+          else
+            COVERAGE="0"
+          fi
+          
+          echo "coverage=$COVERAGE" >> "$GITHUB_OUTPUT"
+          echo "📊 Overall Coverage: ${COVERAGE}%"
+          echo "� Lines: ${COVERED_LINES}/${TOTAL_LINES}"
+          
+          # Validate coverage threshold
+          echo "📋 Required minimum: ${{ inputs.min_coverage }}%"
+          
+          python3 -c "
+          import sys
+          current = float('$COVERAGE')
+          minimum = float('${{ inputs.min_coverage }}')
+          
+          print(f'Current coverage: {current}%')
+          print(f'Minimum required: {minimum}%')
+          
+          if current < minimum:
+              print(f'❌ Coverage {current}% is below minimum {minimum}%')
+              print('💡 Consider adding more unit tests to increase coverage')
+              sys.exit(1)
+          else:
+              print(f'✅ Coverage {current}% meets minimum {minimum}%')
+          "
+          
+          # Generate coverage badge data
+          if (( $(echo "$COVERAGE >= 90" | bc -l) )); then
+            echo "coverage_color=brightgreen" >> $GITHUB_OUTPUT
+          elif (( $(echo "$COVERAGE >= 80" | bc -l) )); then
+            echo "coverage_color=green" >> $GITHUB_OUTPUT
+          elif (( $(echo "$COVERAGE >= 70" | bc -l) )); then
+            echo "coverage_color=yellowgreen" >> $GITHUB_OUTPUT
+          elif (( $(echo "$COVERAGE >= 60" | bc -l) )); then
+            echo "coverage_color=yellow" >> $GITHUB_OUTPUT
+          elif (( $(echo "$COVERAGE >= 50" | bc -l) )); then
+            echo "coverage_color=orange" >> $GITHUB_OUTPUT
+          else
+            echo "coverage_color=red" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 📤 Upload coverage reports
+        if: inputs.upload_coverage && inputs.run_tests && steps.coverage.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports-${{ github.run_id }}
+          path: |
+            TestResults/**/coverage.cobertura.xml
+            TestResults/**/coverage.json
+            TestResults/**/coverage.info
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: 📊 Upload coverage to Codecov
+        if: inputs.upload_coverage && inputs.run_tests && steps.coverage.outcome == 'success'
+        uses: codecov/codecov-action@v4
+        continue-on-error: true
+        with:
+          files: ./TestResults/**/coverage.cobertura.xml
+          flags: unittests
+          name: ${{ github.repository }}-${{ github.run_id }}
+          fail_ci_if_error: false
+          verbose: true
+
+      - name: 📤 Upload test results
+        if: inputs.upload_test_results && inputs.run_tests && (success() || failure())
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ github.run_id }}
+          path: |
+            TestResults/**/*.trx
+            TestResults/**/*.xml
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: 📦 Create build artifact
+        id: artifact
+        if: success()
+        run: |
+          set -euo pipefail
+          
+          ARTIFACT_NAME="build-${{ steps.version.outputs.version }}-${{ github.run_number }}"
+          echo "name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          
+          echo "📦 Creating build artifact: $ARTIFACT_NAME"
+          
+          # Create publish directory
+          mkdir -p publish
+          
+          # Determine what to publish
+          if [ -n "${{ steps.detect.outputs.project_path }}" ]; then
+            echo "📁 Publishing main project: ${{ steps.detect.outputs.project_path }}"
+            dotnet publish "${{ steps.detect.outputs.project_path }}" \
+              --configuration "${{ inputs.configuration }}" \
+              --no-build \
+              --output publish \
+              --verbosity minimal \
+              --property:Version="${{ steps.version.outputs.version }}"
+          elif [ -n "${{ steps.detect.outputs.solution_path }}" ]; then
+            echo "📁 Publishing solution: ${{ steps.detect.outputs.solution_path }}"
+            dotnet publish "${{ steps.detect.outputs.solution_path }}" \
+              --configuration "${{ inputs.configuration }}" \
+              --no-build \
+              --output publish \
+              --verbosity minimal \
+              --property:Version="${{ steps.version.outputs.version }}"
+          else
+            echo "📁 Publishing all publishable projects"
+            # Find publishable projects (typically web apps, console apps)
+            PUBLISHABLE_PROJECTS=$(find . -name "*.csproj" -exec grep -l "Microsoft.NET.Sdk.Web\|OutputType>Exe" {} \;)
+            
+            if [ -n "$PUBLISHABLE_PROJECTS" ]; then
+              for project in $PUBLISHABLE_PROJECTS; do
+                echo "  📦 Publishing: $project"
+                dotnet publish "$project" \
+                  --configuration "${{ inputs.configuration }}" \
+                  --no-build \
+                  --output "publish/$(basename "$project" .csproj)" \
+                  --verbosity minimal \
+                  --property:Version="${{ steps.version.outputs.version }}"
+              done
+            else
+              echo "⚠️ No publishable projects found"
+            fi
+          fi
+          
+          # Create build metadata
+          cat > publish/build-info.json << EOF
+          {
+            "version": "${{ steps.version.outputs.version }}",
+            "commit": "${{ github.sha }}",
+            "branch": "${{ github.ref_name }}",
+            "build_number": "${{ github.run_number }}",
+            "build_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "configuration": "${{ inputs.configuration }}",
+            "dotnet_version": "${{ inputs.dotnet_version }}"
+          }
+          EOF
+          
+          echo "✅ Artifact created successfully"
+
+      - name: 📤 Upload build artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: publish/
+          retention-days: 30
+          compression-level: 6
+
+      - name: � Generate build report
+        if: always()
+        run: |
+          echo "## 🔨 .NET CI Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Build status
+          echo "### 📊 Build Metrics" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| .NET Version | ${{ inputs.dotnet_version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Configuration | ${{ inputs.configuration }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build Version | \`${{ steps.version.outputs.version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Solution | ${{ steps.detect.outputs.solution_path || 'Auto-detected' }} |" >> $GITHUB_STEP_SUMMARY
+          
+          # Test results
+          if [ "${{ inputs.run_tests }}" == "true" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 🧪 Test Results" >> $GITHUB_STEP_SUMMARY
+            echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Tests Status | ${{ steps.test.outcome }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Total Tests | ${{ steps.test.outputs.test_count || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Failed Tests | ${{ steps.test.outputs.failed_tests || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Passed Tests | ${{ steps.test.outputs.passed_tests || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+            
+            if [ "${{ inputs.upload_coverage }}" == "true" ]; then
+              echo "| Code Coverage | ${{ steps.coverage.outputs.coverage || 'N/A' }}% |" >> $GITHUB_STEP_SUMMARY
+              echo "| Min Coverage | ${{ inputs.min_coverage }}% |" >> $GITHUB_STEP_SUMMARY
+              echo "| Coverage Status | ${{ steps.coverage.outcome }} |" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+          
+          # Artifacts
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "| Artifact | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Build Artifact | ${{ steps.artifact.outputs.name || 'Not created' }} |" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ inputs.upload_coverage }}" == "true" ]; then
+            echo "| Coverage Reports | ${{ inputs.run_tests && 'Available' || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ inputs.upload_test_results }}" == "true" ]; then
+            echo "| Test Results | ${{ inputs.run_tests && 'Available' || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Status indicators
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🎯 Quality Gates" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ **All quality gates passed!**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Quality gates failed!**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Required Actions:**" >> $GITHUB_STEP_SUMMARY
+            echo "- Check build logs for specific errors" >> $GITHUB_STEP_SUMMARY
+            echo "- Ensure all tests pass locally" >> $GITHUB_STEP_SUMMARY
+            echo "- Verify code coverage meets minimum threshold" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: 🔄 Create cache summary
+        if: inputs.enable_caching
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 💾 Cache Information" >> $GITHUB_STEP_SUMMARY
+          echo "| Cache Type | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| NuGet Packages | Enabled |" >> $GITHUB_STEP_SUMMARY
+          echo "| Cache Key | \`nuget-${{ runner.os }}-${{ inputs.dotnet_version }}-*\` |" >> $GITHUB_STEP_SUMMARY

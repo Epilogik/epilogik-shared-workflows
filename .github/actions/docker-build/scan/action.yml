@@ -1,0 +1,32 @@
+name: Docker - Scan
+description: Run Trivy scan and output a simple summary
+inputs:
+  image_tag:
+    required: true
+  enabled:
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Run Trivy
+      if: ${{ inputs.enabled }} == 'true'
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ inputs.image_tag }}
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+        severity: 'CRITICAL,HIGH,MEDIUM'
+        exit-code: '0'
+    - name: Summarize
+      if: ${{ inputs.enabled }} == 'true'
+      shell: bash
+      run: |
+        if [ -f trivy-results.sarif ]; then
+          CRITICAL=$(jq '[.runs[].results[].ruleId] | map(select(test("CRITICAL"))) | length' trivy-results.sarif 2>/dev/null || echo "0")
+          HIGH=$(jq '[.runs[].results[].ruleId] | map(select(test("HIGH"))) | length' trivy-results.sarif 2>/dev/null || echo "0")
+          MEDIUM=$(jq '[.runs[].results[].ruleId] | map(select(test("MEDIUM"))) | length' trivy-results.sarif 2>/dev/null || echo "0")
+          SUMMARY="Critical: $CRITICAL, High: $HIGH, Medium: $MEDIUM"
+          echo "summary=$SUMMARY" >> "$GITHUB_OUTPUT"
+        else
+          echo "summary=none" >> "$GITHUB_OUTPUT"
+        fi

@@ -1,0 +1,82 @@
+name: Compose - Deploy
+description: Deploy Docker Compose stack to remote server
+inputs:
+  environment:
+    required: true
+  compose_files:
+    required: true
+  docker_network:
+    required: true
+  deploy_strategy:
+    required: true
+  source_path:
+    required: false
+    default: ''
+  deploy_path:
+    required: true
+outputs:
+  status:
+    description: Deployment status
+    value: ${{ steps.deploy.outputs.status }}
+  services:
+    description: Deployed services
+    value: ${{ steps.deploy.outputs.services }}
+runs:
+  using: composite
+  steps:
+    - name: Create deployment directory
+      shell: bash
+      run: |
+        ssh -i ~/.ssh/id_rsa \
+          -p ${{ secrets.ssh_port || '22' }} \
+          ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} \
+          "mkdir -p ${{ inputs.deploy_path }}/${{ inputs.environment }}"
+
+    - name: Copy compose files
+      shell: bash
+      run: |
+        IFS=',' read -ra FILES <<< "${{ inputs.compose_files }}"
+        for file in "${FILES[@]}"; do
+          file=$(echo "$file" | xargs)
+          source_file="${{ inputs.source_path }}${file}"
+          
+          if [ ! -f "$source_file" ]; then
+            source_file="${{ inputs.environment }}/${file}"
+          fi
+          
+          if [ -f "$source_file" ]; then
+            scp -i ~/.ssh/id_rsa \
+              -P ${{ secrets.ssh_port || '22' }} \
+              "$source_file" \
+              ${{ secrets.ssh_user }}@${{ secrets.ssh_host }}:${{ inputs.deploy_path }}/${{ inputs.environment }}/
+          fi
+        done
+
+    - name: Deploy
+      id: deploy
+      shell: bash
+      run: |
+        START_TIME=$(date +%s)
+        
+        IFS=',' read -ra FILES <<< "${{ inputs.compose_files }}"
+        COMPOSE_CMD="docker-compose"
+        
+        for file in "${FILES[@]}"; do
+          file=$(echo "$file" | xargs)
+          COMPOSE_CMD="$COMPOSE_CMD -f $file"
+        done
+        
+        ssh -i ~/.ssh/id_rsa \
+          -p ${{ secrets.ssh_port || '22' }} \
+          ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} \
+          "cd ${{ inputs.deploy_path }}/${{ inputs.environment }} && \
+           docker network inspect ${{ inputs.docker_network }} >/dev/null 2>&1 || docker network create ${{ inputs.docker_network }} && \
+           $COMPOSE_CMD down --remove-orphans || true && \
+           $COMPOSE_CMD up -d --remove-orphans --force-recreate"
+        
+        END_TIME=$(date +%s)
+        DEPLOYMENT_TIME=$((END_TIME - START_TIME))
+        
+        echo "status=success" >> "$GITHUB_OUTPUT"
+        echo "services=multi-service" >> "$GITHUB_OUTPUT"
+        echo "deployment_time=$DEPLOYMENT_TIME" >> "$GITHUB_OUTPUT"
