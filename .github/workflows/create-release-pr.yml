@@ -128,10 +128,10 @@ jobs:
             echo "branch_exists=false" >> "$GITHUB_OUTPUT"
           fi
           
-          # Check if PR exists (from release branch to base branch)
-          PR_COUNT=$(gh pr list --head "$RELEASE_BRANCH" --base ${{ inputs.base_branch }} --state open --json number --jq length)
+          # Check if PR exists
+          PR_COUNT=$(gh pr list --head ${{ inputs.base_branch }} --base "$RELEASE_BRANCH" --state open --json number --jq length)
           if [ "$PR_COUNT" -gt 0 ]; then
-            PR_NUMBER=$(gh pr list --head "$RELEASE_BRANCH" --base ${{ inputs.base_branch }} --state open --json number --jq '.[0].number')
+            PR_NUMBER=$(gh pr list --head ${{ inputs.base_branch }} --base "$RELEASE_BRANCH" --state open --json number --jq '.[0].number')
             echo "pr_exists=true" >> "$GITHUB_OUTPUT"
             echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           else
@@ -160,30 +160,22 @@ jobs:
             git commit -m "chore: bump version to ${{ steps.version.outputs.next_version }}"
             
             git push origin "$RELEASE_BRANCH"
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-            echo "diff_count=1" >> "$GITHUB_OUTPUT"
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "diff_count=0" >> $GITHUB_OUTPUT
           else
-            echo "🔄 Release branch exists, checking if update needed..."
-            git checkout "$RELEASE_BRANCH"
-            
-            # Check if there are differences
-            DIFF_COUNT=$(git rev-list --count "origin/$RELEASE_BRANCH..origin/$BASE_BRANCH")
+            # Check for differences
+            git fetch origin "$RELEASE_BRANCH"
+            git fetch origin ${{ inputs.base_branch }}
+            DIFF_COUNT=$(git rev-list --count origin/$RELEASE_BRANCH..origin/${{ inputs.base_branch }})
+
+            echo "has_changes=$([ "$DIFF_COUNT" -gt 0 ] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+            echo "diff_count=$DIFF_COUNT" >> $GITHUB_OUTPUT
             
             if [ "$DIFF_COUNT" -gt 0 ]; then
-              echo "📝 Found $DIFF_COUNT new commits, updating release branch..."
-              git merge "origin/$BASE_BRANCH" --no-ff -m "chore: merge latest changes from $BASE_BRANCH"
-              
-              # Update version file
-              mkdir -p .github
-              echo "${{ steps.version.outputs.next_version }}" > .github/VERSION
-              git add .github/VERSION
-              git commit -m "chore: update version to ${{ steps.version.outputs.next_version }}"
-              
-              git push origin "$RELEASE_BRANCH"
+              echo "📝 Found $DIFF_COUNT new commits in ${{ inputs.base_branch }}"
+            else
+              echo "ℹ️  No new commits - branches are in sync"
             fi
-            
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-            echo "diff_count=$DIFF_COUNT" >> "$GITHUB_OUTPUT"
           fi
           
           echo "✅ Release branch ready: $RELEASE_BRANCH"
@@ -203,35 +195,46 @@ jobs:
         run: |
           RELEASE_BRANCH="${{ steps.version.outputs.release_branch }}"
           VERSION="${{ steps.version.outputs.next_version }}"
-          BASE_BRANCH="${{ inputs.base_branch }}"
           
-          echo "� PR Configuration:"
-          echo "  From: $RELEASE_BRANCH"
-          echo "  To: $BASE_BRANCH"
-          echo "  Version: $VERSION"
-          
-          # Simple PR body
-          PR_TITLE="Release v$VERSION"
-          PR_BODY="Automated release PR for version $VERSION"
-          
+          PR_BODY="## 🚀 Release v$VERSION
+
+          ### 📋 Version Information
+          - **Previous:** ${{ steps.version.outputs.current_tag }}
+          - **New:** ${{ steps.version.outputs.next_tag }}
+          - **Branch:** \`${{ inputs.base_branch }}\` → \`$RELEASE_BRANCH\`
+
+          ### 📝 Changes
+          ${{ steps.notes.outputs.release_notes }}
+
+          ### ✅ Checklist
+          - [ ] Code reviewed
+          - [ ] Tests passing
+          - [ ] Documentation updated
+
+          ### 🎯 Next Steps
+          1. Review the changes
+          2. Merge this PR to update release branch
+          3. Production deployment will start automatically
+
+          ---
+          **Auto-generated** • $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+
           if [ "${{ steps.check.outputs.pr_exists }}" == "false" ]; then
-            echo "🆕 Creating new release PR..."
-            
-            # Create PR with simple approach
-            gh pr create \
-              --title "$PR_TITLE" \
+            echo "🆕 Creating new PR..."
+            PR_URL=$(gh pr create \
+              --title "🚀 Release v$VERSION" \
               --body "$PR_BODY" \
-              --base "$BASE_BRANCH" \
-              --head "$RELEASE_BRANCH"
+              --base "$RELEASE_BRANCH" \
+              --head ${{ inputs.base_branch }})
             
-            # Get PR number
-            PR_NUMBER=$(gh pr list --head "$RELEASE_BRANCH" --base "$BASE_BRANCH" --state open --json number --jq '.[0].number')
-            echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
-            echo "✅ PR #$PR_NUMBER created"
+            PR_NUMBER=$(echo "$PR_URL" | grep -oP '\d+$')
+            echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
             
+            ${{ inputs.auto_merge && 'gh pr merge $PR_NUMBER --auto --squash' || 'echo "Auto-merge disabled"' }}
           else
-            echo "🔄 PR already exists: #${{ steps.check.outputs.pr_number }}"
-            echo "pr_number=${{ steps.check.outputs.pr_number }}" >> "$GITHUB_OUTPUT"
+            echo "🔄 Updating existing PR..."
+            gh pr comment "${{ steps.check.outputs.pr_number }}" --body "🔄 **Updated** • $(date -u +'%Y-%m-%d %H:%M:%S UTC')\n\n${{ steps.notes.outputs.release_notes }}"
+            echo "pr_number=${{ steps.check.outputs.pr_number }}" >> $GITHUB_OUTPUT
           fi
 
       - name: Summary
