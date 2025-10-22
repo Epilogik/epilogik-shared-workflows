@@ -154,9 +154,10 @@ jobs:
             git checkout -b "$RELEASE_BRANCH"
             
             # Create a version bump commit to ensure there's a difference
-            echo "${{ steps.version.outputs.next_version }}" > VERSION
-            git add VERSION
-            git commit -m "chore: bump version to ${{ steps.version.outputs.next_version }}" || true
+            mkdir -p .github
+            echo "${{ steps.version.outputs.next_version }}" > .github/VERSION
+            git add .github/VERSION
+            git commit -m "chore: bump version to ${{ steps.version.outputs.next_version }}"
             
             git push origin "$RELEASE_BRANCH"
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
@@ -173,9 +174,10 @@ jobs:
               git merge "origin/$BASE_BRANCH" --no-ff -m "chore: merge latest changes from $BASE_BRANCH"
               
               # Update version file
-              echo "${{ steps.version.outputs.next_version }}" > VERSION
-              git add VERSION
-              git commit -m "chore: update version to ${{ steps.version.outputs.next_version }}" || true
+              mkdir -p .github
+              echo "${{ steps.version.outputs.next_version }}" > .github/VERSION
+              git add .github/VERSION
+              git commit -m "chore: update version to ${{ steps.version.outputs.next_version }}"
               
               git push origin "$RELEASE_BRANCH"
             fi
