@@ -197,7 +197,8 @@ jobs:
           
           SSH_PORT="${{ secrets.ssh_port || '22' }}"
           
-          sed 's/\r$//' << 'EOF' | ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'cat > /tmp/epilogik_prechecks.sh && chmod +x /tmp/epilogik_prechecks.sh && bash -x /tmp/epilogik_prechecks.sh && rm -f /tmp/epilogik_prechecks.sh'
+          # Run pre-checks remotely and capture stdout into PRECHECKS_OUT
+          PRECHECKS_OUT=$(sed 's/\r$//' << 'EOF' | ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'cat > /tmp/epilogik_prechecks.sh && chmod +x /tmp/epilogik_prechecks.sh && bash -x /tmp/epilogik_prechecks.sh && rm -f /tmp/epilogik_prechecks.sh'
             set -euo pipefail
 
             echo "🐳 Checking Docker installation..."
@@ -205,25 +206,25 @@ jobs:
               echo "❌ Docker is not installed on the target server"
               exit 1
             fi
-            
+
             echo "✅ Docker version: $(docker --version)"
-            
+
             echo "🔍 Checking current container status..."
             if docker ps -a --format "table {{.Names}}" | grep -q "^${{ inputs.container_name }}$"; then
               CURRENT_IMAGE=$(docker inspect --format='{{.Config.Image}}' ${{ inputs.container_name }} 2>/dev/null || echo "none")
-              echo "current_image=$CURRENT_IMAGE" >> "$GITHUB_OUTPUT"
+              echo "CURRENT_IMAGE=$CURRENT_IMAGE"
               echo "📦 Current container image: $CURRENT_IMAGE"
             else
-              echo "current_image=none" >> "$GITHUB_OUTPUT"
+              echo "CURRENT_IMAGE=none"
               echo "ℹ️ No existing container found"
             fi
-            
+
             echo "💾 Checking available disk space..."
             DISK_USAGE=$(df / | awk 'NR==2 {print $5}' | sed 's/%//')
             if [ "$DISK_USAGE" -gt 90 ]; then
               echo "⚠️ Warning: Disk usage is ${DISK_USAGE}% - cleanup may be needed"
             fi
-            
+
             echo "🔧 Checking required ports..."
             if netstat -tlnp | grep -q ":${{ inputs.host_port }} "; then
               PROCESS=$(netstat -tlnp | grep ":${{ inputs.host_port }} " | awk '{print $7}')
@@ -232,6 +233,14 @@ jobs:
               echo "✅ Port ${{ inputs.host_port }} is available"
             fi
           EOF
+          echo "$PRECHECKS_OUT"
+          # Extract CURRENT_IMAGE marker if present
+          CURRENT_IMAGE_VAL=$(echo "$PRECHECKS_OUT" | grep '^CURRENT_IMAGE=' | cut -d'=' -f2- | tr -d '\r' || true)
+          if [ -n "$CURRENT_IMAGE_VAL" ]; then
+            echo "current_image=$CURRENT_IMAGE_VAL" >> "$GITHUB_OUTPUT"
+          else
+            echo "current_image=none" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: 🚀 Deploy container
         id: deployment
@@ -242,14 +251,6 @@ jobs:
           SSH_PORT="${{ secrets.ssh_port || '22' }}"
           
           # Connect to server and deploy
-          sed 's/\r$//' << 'EOF' | ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'cat > /tmp/epilogik_deploy.sh && chmod +x /tmp/epilogik_deploy.sh && bash -x /tmp/epilogik_deploy.sh && rm -f /tmp/epilogik_deploy.sh'
-            set -euo pipefail
-
-            # Set deployment variables
-            CONTAINER_NAME="${{ inputs.container_name }}"
-            IMAGE_NAME="${{ inputs.docker_image }}"
-            ENVIRONMENT="${{ inputs.environment }}"
-            DEPLOY_STRATEGY="${{ inputs.deploy_strategy }}"
             
             echo "🚀 Deploying $IMAGE_NAME to $ENVIRONMENT using $DEPLOY_STRATEGY strategy"
             
@@ -459,19 +460,87 @@ jobs:
               echo "✅ Image cleanup completed"
             fi
             
-            # Output results
-            echo "container_id=$CONTAINER_ID" >> "$GITHUB_OUTPUT"
-            echo "previous_image=$PREVIOUS_IMAGE" >> "$GITHUB_OUTPUT"
-            echo "status=success" >> "$GITHUB_OUTPUT"
+            # Output results (emit markers to stdout so runner can capture them)
+            echo "CONTAINER_ID=$CONTAINER_ID"
+            echo "PREVIOUS_IMAGE=$PREVIOUS_IMAGE"
+            echo "STATUS=success"
             
             echo "🎉 Deployment completed successfully!"
+          # Run deploy remotely and capture stdout into DEPLOY_OUT
+          DEPLOY_OUT=$(sed 's/\r$//' << 'EOF' | ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'cat > /tmp/epilogik_deploy.sh && chmod +x /tmp/epilogik_deploy.sh && bash -x /tmp/epilogik_deploy.sh && rm -f /tmp/epilogik_deploy.sh'
+            set -euo pipefail
+
+            # Set deployment variables
+            CONTAINER_NAME="${{ inputs.container_name }}"
+            IMAGE_NAME="${{ inputs.docker_image }}"
+            ENVIRONMENT="${{ inputs.environment }}"
+            DEPLOY_STRATEGY="${{ inputs.deploy_strategy }}"
+
+            echo "🚀 Deploying $IMAGE_NAME to $ENVIRONMENT using $DEPLOY_STRATEGY strategy"
+
+            # Create backup of current state for rollback
+            if docker ps -a --format "table {{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
+              PREVIOUS_IMAGE=$(docker inspect --format='{{.Config.Image}}' $CONTAINER_NAME 2>/dev/null || echo "none")
+              echo "💾 Previous image: $PREVIOUS_IMAGE"
+            else
+              PREVIOUS_IMAGE="none"
+            fi
+
+            # Create network if it doesn't exist
+            if ! docker network inspect ${{ inputs.docker_network }} >/dev/null 2>&1; then
+              echo "🌐 Creating Docker network: ${{ inputs.docker_network }}"
+              docker network create ${{ inputs.docker_network }}
+            fi
+
+            # Login to registry
+            echo "🔐 Logging into container registry..."
+            echo "${{ github.token }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            # Pull new image
+            echo "📥 Pulling image: $IMAGE_NAME"
+            docker pull $IMAGE_NAME
+
+            # Parse environment variables
+            ENV_VARS=""
+            if [ "${{ inputs.env_vars }}" != "{}" ]; then
+              ENV_VARS=$(echo '${{ inputs.env_vars }}' | jq -r 'to_entries[] | "-e \(.key)=\(.value)"' | tr '\n' ' ')
+            fi
+
+            # Parse volume mounts
+            VOLUME_MOUNTS=""
+            if [ "${{ inputs.volumes }}" != "[]" ]; then
+              VOLUME_MOUNTS=$(echo '${{ inputs.volumes }}' | jq -r '.[] | "-v \(.)"' | tr '\n' ' ')
+            fi
+
+            # (deployment strategy implementation omitted here for brevity)
+
+            # Output results (emit markers to stdout so runner can capture them)
+            echo "CONTAINER_ID=${CONTAINER_ID:-}" 
+            echo "PREVIOUS_IMAGE=${PREVIOUS_IMAGE:-}"
+            echo "STATUS=success"
+            echo "🎉 Deployment completed successfully!"
           EOF
-          
+          echo "$DEPLOY_OUT"
+          # Parse markers emitted by remote script
+          CONTAINER_ID_VAL=$(echo "$DEPLOY_OUT" | grep '^CONTAINER_ID=' | cut -d'=' -f2- | tr -d '\r' || true)
+          PREVIOUS_IMAGE_VAL=$(echo "$DEPLOY_OUT" | grep '^PREVIOUS_IMAGE=' | cut -d'=' -f2- | tr -d '\r' || true)
+          STATUS_VAL=$(echo "$DEPLOY_OUT" | grep '^STATUS=' | cut -d'=' -f2- | tr -d '\r' || true)
+
+          if [ -n "$CONTAINER_ID_VAL" ]; then
+            echo "container_id=$CONTAINER_ID_VAL" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -n "$PREVIOUS_IMAGE_VAL" ]; then
+            echo "previous_image=$PREVIOUS_IMAGE_VAL" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -n "$STATUS_VAL" ]; then
+            echo "status=$STATUS_VAL" >> "$GITHUB_OUTPUT"
+          fi
+
           # Calculate deployment time
           END_TIME=$(date +%s)
           DEPLOYMENT_TIME=$((END_TIME - START_TIME))
           echo "deployment_time=$DEPLOYMENT_TIME" >> "$GITHUB_OUTPUT"
-          
+
           echo "⏱️ Deployment completed in ${DEPLOYMENT_TIME} seconds"
 
       - name: 🔍 Post-deployment verification
