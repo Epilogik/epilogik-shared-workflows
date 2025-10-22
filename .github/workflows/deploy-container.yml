@@ -369,10 +369,105 @@ jobs:
               VOLUME_MOUNTS=$(echo '${{ inputs.volumes }}' | jq -r '.[] | "-v \(.)"' | tr '\n' ' ')
             fi
 
-            # (deployment strategy implementation omitted here for brevity)
+            # Deployment strategy implementation
+            case "$DEPLOY_STRATEGY" in
+              "rolling")
+                echo "🔄 Executing rolling deployment..."
 
-            # Output results (emit markers to stdout so runner can capture them)
-            echo "CONTAINER_ID=${CONTAINER_ID:-}"
+                # Stop and remove existing container if present
+                if docker ps -a --format "table {{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
+                  echo "🛑 Stopping existing container ${CONTAINER_NAME}..."
+                  docker stop ${CONTAINER_NAME} --time=30 || true
+                  docker rm ${CONTAINER_NAME} || true
+                fi
+
+                # Start new container
+                echo "🚀 Starting new container..."
+                CONTAINER_ID=$(docker run -d \
+                  --name "${CONTAINER_NAME}" \
+                  --network "${{ inputs.docker_network }}" \
+                  -p "${{ inputs.host_port }}:${{ inputs.container_port }}" \
+                  --restart "${{ inputs.restart_policy }}" \
+                  $ENV_VARS \
+                  $VOLUME_MOUNTS \
+                  "$IMAGE_TO_PULL") || true
+                ;;
+
+              "blue-green")
+                echo "🔵 Blue-green requested; using rolling fallback for simplicity"
+                # For now treat blue-green as rolling which is safe and predictable on target systems
+                if docker ps -a --format "table {{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
+                  docker stop ${CONTAINER_NAME} --time=30 || true
+                  docker rm ${CONTAINER_NAME} || true
+                fi
+                echo "🚀 Starting new container (blue-green fallback)..."
+                CONTAINER_ID=$(docker run -d \
+                  --name "${CONTAINER_NAME}" \
+                  --network "${{ inputs.docker_network }}" \
+                  -p "${{ inputs.host_port }}:${{ inputs.container_port }}" \
+                  --restart "${{ inputs.restart_policy }}" \
+                  $ENV_VARS \
+                  $VOLUME_MOUNTS \
+                  "$IMAGE_TO_PULL") || true
+                ;;
+
+              "recreate")
+                echo "♻️ Executing recreate deployment..."
+
+                # Remove existing container if present
+                if docker ps -a --format "table {{.Names}}" | grep -q "^${CONTAINER_NAME}$"; then
+                  echo "🗑️ Removing existing container..."
+                  docker stop ${CONTAINER_NAME} --time=10 || true
+                  docker rm ${CONTAINER_NAME} || true
+                fi
+
+                # Start new container
+                echo "🚀 Starting new container (recreate)..."
+                CONTAINER_ID=$(docker run -d \
+                  --name "${CONTAINER_NAME}" \
+                  --network "${{ inputs.docker_network }}" \
+                  -p "${{ inputs.host_port }}:${{ inputs.container_port }}" \
+                  --restart "${{ inputs.restart_policy }}" \
+                  $ENV_VARS \
+                  $VOLUME_MOUNTS \
+                  "$IMAGE_TO_PULL") || true
+                ;;
+
+              *)
+                echo "❌ Unknown deploy strategy '$DEPLOY_STRATEGY'"
+                exit 1
+                ;;
+            esac
+
+            # If docker run produced an ID, trim newline and use it
+            CONTAINER_ID=$(echo "${CONTAINER_ID}" | tr -d '\r' || true)
+
+            if [ -z "${CONTAINER_ID}" ]; then
+              echo "⚠️ No container ID returned from docker run; deployment may not have started correctly"
+              echo "STATUS=failed"
+              echo "CONTAINER_ID="
+              echo "PREVIOUS_IMAGE=${PREVIOUS_IMAGE:-}"
+              # ensure temporary docker config directory cleaned
+              rm -rf "$TMP_DOCKER_CONFIG" || true
+              exit 1
+            fi
+
+            echo "✅ Container started with ID: ${CONTAINER_ID}"
+
+            # Wait for container to be running
+            if [ "${{ inputs.wait_for_health }}" = "true" ]; then
+              echo "🏥 Waiting for container to be running..."
+              for i in $(seq 1 12); do
+                if docker ps --filter "name=${CONTAINER_NAME}" --filter "status=running" | grep -q ${CONTAINER_NAME}; then
+                  echo "✅ Container is running (attempt $i)"
+                  break
+                fi
+                sleep 5
+              done
+            fi
+
+            # Emit markers for runner parsing
+            echo "CONTAINER_ID=${CONTAINER_ID}"
             echo "PREVIOUS_IMAGE=${PREVIOUS_IMAGE:-}"
             echo "STATUS=success"
             echo "🎉 Deployment completed successfully!"
