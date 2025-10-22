@@ -1,6 +1,16 @@
 name: Deploy - Remote Run
 description: Pull image on remote and start container according to strategy
 inputs:
+  ssh_host:
+    description: 'SSH host'
+    required: true
+  ssh_user:
+    description: 'SSH user'
+    required: true
+  ssh_port:
+    description: 'SSH port'
+    required: false
+    default: '22'
   container_name:
     description: 'Container name'
     required: true
@@ -32,15 +42,22 @@ inputs:
     description: 'Volumes JSON'
     required: false
     default: '[]'
+outputs:
+  status:
+    description: 'Deployment status'
+    value: ${{ steps.deploy.outputs.status }}
+  container_id:
+    description: 'Container ID'
+    value: ${{ steps.deploy.outputs.container_id }}
 runs:
   using: 'composite'
   steps:
     - name: Run remote deploy
+      id: deploy
       shell: bash
       run: |
         set -euo pipefail
-        SSH_PORT="${{ secrets.ssh_port || '22' }}"
-        ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'bash -s' <<'REMOTE'
+        ssh -p ${{ inputs.ssh_port }} ${{ inputs.ssh_user }}@${{ inputs.ssh_host }} 'bash -s' <<'REMOTE'
           set -euo pipefail
           CONTAINER_NAME="${{ inputs.container_name }}"
           IMAGE_TO_PULL="${{ inputs.docker_image }}"
@@ -61,3 +78,6 @@ runs:
           echo "CONTAINER_ID=${CONTAINER_ID:-}"
           echo "STATUS=success"
         REMOTE
+        
+        echo "status=success" >> $GITHUB_OUTPUT
+        echo "container_id=$(ssh -p ${{ inputs.ssh_port }} ${{ inputs.ssh_user }}@${{ inputs.ssh_host }} 'docker ps -aqf name=${{ inputs.container_name }}' 2>/dev/null || echo '')" >> $GITHUB_OUTPUT

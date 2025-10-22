@@ -4,6 +4,16 @@ inputs:
   container_name:
     description: 'Container name'
     required: true
+  ssh_host:
+    description: 'SSH host'
+    required: true
+  ssh_user:
+    description: 'SSH user'
+    required: true
+  ssh_port:
+    description: 'SSH port'
+    required: false
+    default: '22'
 runs:
   using: 'composite'
   steps:
@@ -11,8 +21,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        SSH_PORT="${{ secrets.ssh_port || '22' }}"
-        ssh -p $SSH_PORT ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} 'bash -s' <<'REMOTE'
+        ssh -p ${{ inputs.ssh_port }} ${{ inputs.ssh_user }}@${{ inputs.ssh_host }} 'bash -s' <<'REMOTE'
           echo "📊 Container status:"
           docker ps --filter "name=${{ inputs.container_name }}" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
           echo "💾 Container resource usage:"
