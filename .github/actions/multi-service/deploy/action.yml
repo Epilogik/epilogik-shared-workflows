@@ -14,6 +14,16 @@ inputs:
     default: ''
   deploy_path:
     required: true
+  ssh_host:
+    description: 'SSH host'
+    required: true
+  ssh_user:
+    description: 'SSH user'
+    required: true
+  ssh_port:
+    description: 'SSH port'
+    required: false
+    default: '22'
 outputs:
   status:
     description: Deployment status
@@ -28,8 +38,8 @@ runs:
       shell: bash
       run: |
         ssh -i ~/.ssh/id_rsa \
-          -p ${{ secrets.ssh_port || '22' }} \
-          ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} \
+          -p ${{ inputs.ssh_port }} \
+          ${{ inputs.ssh_user }}@${{ inputs.ssh_host }} \
           "mkdir -p ${{ inputs.deploy_path }}/${{ inputs.environment }}"
 
     - name: Copy compose files
@@ -46,9 +56,9 @@ runs:
           
           if [ -f "$source_file" ]; then
             scp -i ~/.ssh/id_rsa \
-              -P ${{ secrets.ssh_port || '22' }} \
+              -P ${{ inputs.ssh_port }} \
               "$source_file" \
-              ${{ secrets.ssh_user }}@${{ secrets.ssh_host }}:${{ inputs.deploy_path }}/${{ inputs.environment }}/
+              ${{ inputs.ssh_user }}@${{ inputs.ssh_host }}:${{ inputs.deploy_path }}/${{ inputs.environment }}/
           fi
         done
 
@@ -67,8 +77,8 @@ runs:
         done
         
         ssh -i ~/.ssh/id_rsa \
-          -p ${{ secrets.ssh_port || '22' }} \
-          ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} \
+          -p ${{ inputs.ssh_port }} \
+          ${{ inputs.ssh_user }}@${{ inputs.ssh_host }} \
           "cd ${{ inputs.deploy_path }}/${{ inputs.environment }} && \
            docker network inspect ${{ inputs.docker_network }} >/dev/null 2>&1 || docker network create ${{ inputs.docker_network }} && \
            $COMPOSE_CMD down --remove-orphans || true && \

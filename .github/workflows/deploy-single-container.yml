@@ -127,6 +127,8 @@ jobs:
       - name: Setup SSH
         uses: Epilogik/epilogik-shared-workflows/.github/actions/single-container/ssh-setup@main
         with:
+          ssh_host: ${{ secrets.ssh_host }}
+          ssh_key: ${{ secrets.ssh_key }}
           ssh_port: ${{ secrets.ssh_port || '22' }}
 
       - name: Pre-deployment checks
@@ -135,6 +137,9 @@ jobs:
         with:
           container_name: ${{ inputs.container_name }}
           host_port: ${{ inputs.host_port }}
+          ssh_host: ${{ secrets.ssh_host }}
+          ssh_user: ${{ secrets.ssh_user }}
+          ssh_port: ${{ secrets.ssh_port || '22' }}
 
       - name: Deploy container
         id: deployment
@@ -149,9 +154,15 @@ jobs:
           restart_policy: ${{ inputs.restart_policy }}
           env_vars: ${{ inputs.env_vars }}
           volumes: ${{ inputs.volumes }}
+          ssh_host: ${{ secrets.ssh_host }}
+          ssh_user: ${{ secrets.ssh_user }}
+          ssh_port: ${{ secrets.ssh_port || '22' }}
 
       - name: Post-deployment verification
         if: steps.deployment.outputs.status == 'success'
         uses: Epilogik/epilogik-shared-workflows/.github/actions/single-container/postverify@main
         with:
           container_name: ${{ inputs.container_name }}
+          ssh_host: ${{ secrets.ssh_host }}
+          ssh_user: ${{ secrets.ssh_user }}
+          ssh_port: ${{ secrets.ssh_port || '22' }}

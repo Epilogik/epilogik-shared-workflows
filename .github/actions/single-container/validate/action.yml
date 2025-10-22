@@ -1,5 +1,5 @@
 name: Deploy - Validate Inputs
-description: Validate inputs and required secrets for deployment
+description: Validate inputs for deployment
 inputs:
   environment:
     description: 'Deployment environment'
@@ -13,24 +13,11 @@ inputs:
 runs:
   using: 'composite'
   steps:
-    - name: Validate required secrets and inputs
+    - name: Validate required inputs
       shell: bash
       run: |
         set -euo pipefail
         echo "🔍 Validating deployment inputs..."
-
-        if [ -z "${{ secrets.ssh_host }}" ]; then
-          echo "❌ Error: ssh_host secret is not set"
-          exit 1
-        fi
-        if [ -z "${{ secrets.ssh_user }}" ]; then
-          echo "❌ Error: ssh_user secret is not set"
-          exit 1
-        fi
-        if [ -z "${{ secrets.ssh_key }}" ]; then
-          echo "❌ Error: ssh_key secret is not set"
-          exit 1
-        fi
 
         case "${{ inputs.environment }}" in
           staging|production|development)

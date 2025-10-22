@@ -7,6 +7,16 @@ inputs:
     required: true
   environment:
     required: true
+  ssh_host:
+    description: 'SSH host'
+    required: true
+  ssh_user:
+    description: 'SSH user'
+    required: true
+  ssh_port:
+    description: 'SSH port'
+    required: false
+    default: '22'
 runs:
   using: composite
   steps:
@@ -14,8 +24,8 @@ runs:
       shell: bash
       run: |
         ssh -i ~/.ssh/id_rsa \
-          -p ${{ secrets.ssh_port || '22' }} \
-          ${{ secrets.ssh_user }}@${{ secrets.ssh_host }} \
+          -p ${{ inputs.ssh_port }} \
+          ${{ inputs.ssh_user }}@${{ inputs.ssh_host }} \
           "cd ${{ inputs.deploy_path }}/${{ inputs.environment }} && \
            for i in {1..30}; do \
              if docker-compose ps | grep -q 'unhealthy'; then \
