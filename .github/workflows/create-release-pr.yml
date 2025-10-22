@@ -58,19 +58,35 @@ jobs:
         id: version
         run: |
           # Get latest tag
-          git fetch --tags
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "${{ inputs.tag_prefix }}0.0.0")
-          echo "Current tag: $LATEST_TAG"
+          git fetch --tags --prune
           
-          # Extract version without prefix
-          CURRENT_VERSION=$(echo "$LATEST_TAG" | sed 's/^${{ inputs.tag_prefix }}//')
-          echo "Current version: $CURRENT_VERSION"
+          # Find latest semantic version tag (format: v1.2.3 or 1.2.3)
+          LATEST_TAG=$(git tag -l | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
           
-          # Parse version parts
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="${{ inputs.tag_prefix }}0.0.0"
+            echo "⚠️  No semantic version tags found, starting from $LATEST_TAG"
+          else
+            echo "📌 Latest tag found: $LATEST_TAG"
+          fi
+          
+          # Extract version without prefix (remove 'v' or custom prefix)
+          PREFIX="${{ inputs.tag_prefix }}"
+          CURRENT_VERSION="${LATEST_TAG#$PREFIX}"
+          echo "📊 Current version: $CURRENT_VERSION"
+          
+          # Parse version parts (handle only semantic versions)
+          if [[ ! "$CURRENT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "⚠️  Invalid version format: $CURRENT_VERSION, resetting to 0.0.0"
+            CURRENT_VERSION="0.0.0"
+          fi
+          
           IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
           MAJOR=${VERSION_PARTS[0]:-0}
           MINOR=${VERSION_PARTS[1]:-0}
           PATCH=${VERSION_PARTS[2]:-0}
+          
+          echo "🔢 Parsed version: $MAJOR.$MINOR.$PATCH"
           
           # Bump version based on bump_type
           case "${{ inputs.bump_type }}" in
@@ -87,19 +103,20 @@ jobs:
               PATCH=$((PATCH + 1))
               ;;
             *)
-              # If it's a specific version, use it
+              # If it's a specific version, use it (must be semantic version)
               if [[ "${{ inputs.bump_type }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                CURRENT_VERSION="${{ inputs.bump_type }}"
-                IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
-                MAJOR=${VERSION_PARTS[0]}
-                MINOR=${VERSION_PARTS[1]}
-                PATCH=${VERSION_PARTS[2]}
+                MAJOR=$(echo "${{ inputs.bump_type }}" | cut -d. -f1)
+                MINOR=$(echo "${{ inputs.bump_type }}" | cut -d. -f2)
+                PATCH=$(echo "${{ inputs.bump_type }}" | cut -d. -f3)
+                echo "🎯 Using specific version: $MAJOR.$MINOR.$PATCH"
               else
+                echo "⚠️  Invalid bump_type, defaulting to patch"
                 PATCH=$((PATCH + 1))
               fi
               ;;
           esac
           
+          # Final version (semantic versioning only)
           NEW_VERSION="$MAJOR.$MINOR.$PATCH"
           NEW_TAG="${{ inputs.tag_prefix }}$NEW_VERSION"
           RELEASE_BRANCH="release/$NEW_VERSION"
@@ -109,10 +126,11 @@ jobs:
           echo "current_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
           echo "release_branch=$RELEASE_BRANCH" >> $GITHUB_OUTPUT
           
-          echo "📋 Version calculated:"
-          echo "  Current: $LATEST_TAG"
-          echo "  Next: $NEW_TAG"
-          echo "  Branch: $RELEASE_BRANCH"
+          echo ""
+          echo "✅ Version calculation complete:"
+          echo "   Current: $LATEST_TAG"
+          echo "   Next: $NEW_TAG"
+          echo "   Branch: $RELEASE_BRANCH"
 
       - name: Check existing branch and PR
         id: check
